@@ -1,6 +1,5 @@
 package jp.axinc.ailia_kotlin
 
-//import android.R
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.BitmapFactory.Options
@@ -122,8 +121,7 @@ class MainActivity : AppCompatActivity() {
             )
 
             // Samples
-            var success = true
-            success = success and ailia_pose_estimator(selectedEnv.id)
+            var success = ailia_pose_estimator(selectedEnv.id)
 
             // ForTest
             if (success) {
