@@ -1,4 +1,4 @@
-# ailia-kotlin
+# ailia-android-studio-kotlin
 
 Demo project of ailia SDK with Android Studio (Kotlin)
 
@@ -25,37 +25,11 @@ This demo estimate keypoints of person.
 
 Input
 
-![input image](./app/src/main/res/raw/person.jpg)
+<img src="./app/src/main/res/raw/person.jpg" width=480 height=480/>
 
-Output (Console)
+Output
 
-```
-I/AILIA_Main: Environment 3: ( type: 2, name: VulkanDNN-SwiftShader Device (LLVM 10.0.0))
-I/AILIA_Main: Selected environment id: 3 (VulkanDNN-SwiftShader Device (LLVM 10.0.0))
-I/AILIA_Main: objCount (human count) = 1
-I/AILIA_Main: total score = 25.370672
-I/AILIA_Main: angle[3] = {-0.11134362, 0.0, 0.0}
-I/AILIA_Main: keypoint[0] = {x: 0.753125, y: 0.51666665, z_local: 0.0, score: 0.8854157, interpolated: 0}
-I/AILIA_Main: keypoint[1] = {x: 0.76875, y: 0.49166667, z_local: 0.0, score: 0.8802486, interpolated: 0}
-I/AILIA_Main: keypoint[2] = {x: 0.740625, y: 0.5083333, z_local: 0.0, score: 0.9541165, interpolated: 0}
-I/AILIA_Main: keypoint[3] = {x: 0.809375, y: 0.49583334, z_local: 0.0, score: 0.7805725, interpolated: 0}
-I/AILIA_Main: keypoint[4] = {x: 0.734375, y: 0.51666665, z_local: 0.0, score: 0.15920368, interpolated: 0}
-I/AILIA_Main: keypoint[5] = {x: 0.859375, y: 0.6166667, z_local: 0.0, score: 0.81659067, interpolated: 0}
-I/AILIA_Main: keypoint[6] = {x: 0.73125, y: 0.6166667, z_local: 0.0, score: 0.7995946, interpolated: 0}
-I/AILIA_Main: keypoint[7] = {x: 0.884375, y: 0.7583333, z_local: 0.0, score: 0.8942372, interpolated: 0}
-I/AILIA_Main: keypoint[8] = {x: 0.665625, y: 0.71666664, z_local: 0.0, score: 0.93179995, interpolated: 0}
-I/AILIA_Main: keypoint[9] = {x: 0.921875, y: 0.8958333, z_local: 0.0, score: 0.84773785, interpolated: 0}
-I/AILIA_Main: keypoint[10] = {x: 0.696875, y: 0.59583336, z_local: 0.0, score: 0.8966119, interpolated: 0}
-I/AILIA_Main: keypoint[11] = {x: 0.8, y: 0.87083334, z_local: 0.0, score: 0.6003204, interpolated: 0}
-I/AILIA_Main: keypoint[12] = {x: 0.715625, y: 0.85833335, z_local: 0.0, score: 0.7168967, interpolated: 0}
-I/AILIA_Main: keypoint[13] = {x: 0.815625, y: 0.99583334, z_local: 0.0, score: 0.118452325, interpolated: 0}
-I/AILIA_Main: keypoint[14] = {x: 0.684375, y: 0.99583334, z_local: 0.0, score: 0.22999896, interpolated: 0}
-I/AILIA_Main: keypoint[15] = {x: 0.0, y: 0.0, z_local: 0.0, score: 0.0, interpolated: 0}
-I/AILIA_Main: keypoint[16] = {x: 0.0, y: 0.0, z_local: 0.0, score: 0.0, interpolated: 0}
-I/AILIA_Main: keypoint[17] = {x: 0.79375, y: 0.6166667, z_local: 0.0, score: 0.9140342, interpolated: 0}
-I/AILIA_Main: keypoint[18] = {x: 0.76979166, y: 0.78194445, z_local: 0.0, score: 0.6003204, interpolated: 1}
-I/AILIA_Main: Success
-```
+![input image](./demo.png)
 
 ## Main code
 

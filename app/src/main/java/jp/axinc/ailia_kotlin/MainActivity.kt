@@ -9,12 +9,37 @@ import androidx.appcompat.app.AppCompatActivity
 import axip.ailia.*
 import org.json.JSONObject
 import java.io.*
+//import android.R
+import android.R.attr
+
+import android.widget.ImageView
+
+import java.nio.ByteBuffer
+
+import android.R.attr.height
+
+import android.R.attr.width
+import android.view.View
+import android.graphics.PorterDuff
+
+import android.graphics.PorterDuffXfermode
+
+import android.graphics.Color
+
+import android.graphics.Rect
+
+import android.graphics.Paint
+
+import android.graphics.Canvas
+
+
+
 
 
 class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        //setContentView(R.layout.activity_main)
+        setContentView(R.layout.activity_main)
         ailia_init(savedInstanceState);
     }
 
@@ -56,6 +81,7 @@ class MainActivity : AppCompatActivity() {
 
     fun ailia_pose_estimator(envId: Int): Boolean {
         return try {
+            //create ailia pose estimator
             val ailia = AiliaModel(
                 envId,
                 Ailia.MULTITHREAD_AUTO,
@@ -63,7 +89,9 @@ class MainActivity : AppCompatActivity() {
                 loadRawFile(R.raw.lightweight_human_pose_weight)
             )
             val poseEstimator =
-                ailia.createPoseEstimator(AiliaPoseEstimatorModel.ALGORITHM_LW_HUMAN_POSE)
+                AiliaPoseEstimatorModel(ailia.handle,AiliaPoseEstimatorAlgorithm.LW_HUMAN_POSE)
+
+            //get test image
             val imageId: Int = R.raw.person
             val options = Options()
             options.inScaled = false
@@ -71,6 +99,20 @@ class MainActivity : AppCompatActivity() {
             val img = loadRawImage(bmp)
             val w = bmp.width
             val h = bmp.height
+
+            //display test image
+            val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(img))
+            val image = findViewById<View>(R.id.imageView) as ImageView
+            image.setImageBitmap(bitmap)
+
+            //create canvas
+            val canvas = Canvas(bitmap)
+            val paint = Paint()
+            canvas.drawARGB(0, 0, 0, 0)
+            paint.color = Color.parseColor("#FFFFFF")
+
+            //run
             poseEstimator.compute(img, w * 4, w, h, AiliaImageFormat.RGBA)
             val objCount = poseEstimator.objectCount
             Log.i("AILIA_Main", "objCount (human count) = $objCount")
@@ -86,6 +128,15 @@ class MainActivity : AppCompatActivity() {
                     Log.i(
                         "AILIA_Main",
                         "keypoint[" + i + "] = {x: " + p.x + ", y: " + p.y + ", z_local: " + p.z_local + ", score: " + p.score + ", interpolated: " + p.interpolated + "}"
+                    )
+
+                    //display result
+                    var r:Float = 8.0f
+                    canvas.drawCircle(
+                        (bitmap.getWidth() * p.x).toFloat(),
+                        (bitmap.getHeight() * p.y).toFloat(),
+                        r,
+                        paint
                     )
                 }
             } else {
