@@ -1,4 +1,8 @@
-# ailia-android-studio-kotlin
+# ailia SDK JNI Package
+
+!! CAUTION !! “ailia” IS NOT OPEN SOURCE SOFTWARE (OSS). As long as user complies with the conditions stated in License Document, user may use the Software for free of charge, but the Software is basically paid software.
+
+## About this package
 
 Demo project of ailia SDK with Android Studio (Kotlin)
 
@@ -8,17 +12,6 @@ Demo project of ailia SDK with Android Studio (Kotlin)
 - Android Studio 2023.1.1
 - Gradle 7.2
 - ailia SDK 1.5.0
-
-## Setup
-
-Please put ailia libraries here.
-
-```
-app/src/main/jniLibs/arm64-v8a/libailia.so
-app/src/main/jniLibs/armeabi-v7a/libailia.so
-app/src/main/jniLibs/x86/libailia.so
-app/src/main/jniLibs/x86_64/libailia.so
-```
 
 ## Detail
 
@@ -35,3 +28,7 @@ Output
 ## Main code
 
 [MainActivity.kt](/app/src/main/java/jp/axinc/ailia_kotlin/MainActivity.kt)
+
+## About ailia SDK
+
+ailia SDK is a cross-platform high speed inference SDK. The ailia SDK provides a consistent C++ API on Windows, Mac, Linux, iOS, Android, Jetson and RaspberryPi. It supports Unity, Python and JNI for efficient AI implementation. The ailia SDK makes great use of the GPU via Vulkan and Metal to serve accelerated computing.
