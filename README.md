@@ -4,9 +4,10 @@ Demo project of ailia SDK with Android Studio (Kotlin)
 
 ## Test environment
 
-- macOS 12.1
-- Android Studio 2020.3.1
-- ailia SDK 1.2.9
+- macOS 12.1 / Windows 11
+- Android Studio 2023.1.1
+- Gradle 7.2
+- ailia SDK 1.5.0
 
 ## Setup
 
