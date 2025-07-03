@@ -16,134 +16,6 @@ class AiliaTFLiteSample {
         private const val TAG = "AILIA_Main"
     }
 
-    private fun loadFile(filename: String): ByteArray? {
-        return try {
-            File(filename).readBytes()
-        } catch (e: Exception) {
-            Log.e(TAG, "Could not read file: $filename")
-            null
-        }
-    }
-
-    private fun loadImage(inputTensorType: Int, inputBuffer: ByteArray, inputShape: IntArray, bitmap : Bitmap): ByteArray {
-        val scaledBitmap = Bitmap.createScaledBitmap(bitmap, inputShape[2], inputShape[1], true)
-        val channels = inputShape[3]
-        val buffer = ByteArray(inputShape[1] * inputShape[2] * channels)
-
-        val pixels = IntArray(inputShape[1] * inputShape[2])
-        scaledBitmap.getPixels(pixels, 0, inputShape[2], 0, 0, inputShape[2], inputShape[1])
-
-        for (y in 0 until inputShape[1]) {
-            for (x in 0 until inputShape[2]) {
-                val pixel = pixels[y * inputShape[2] + x]
-                val r = (pixel shr 16) and 0xFF
-                val g = (pixel shr 8) and 0xFF
-                val b = pixel and 0xFF
-
-                if (inputTensorType == AiliaTFLite.AILIA_TFLITE_TENSOR_TYPE_FLOAT32) {
-                    val floatBuffer = inputBuffer as FloatArray
-                    floatBuffer[(y * inputShape[2] + x) * channels + 0] = r.toFloat()
-                    floatBuffer[(y * inputShape[2] + x) * channels + 1] = g.toFloat()
-                    floatBuffer[(y * inputShape[2] + x) * channels + 2] = b.toFloat()
-                } else {
-                    buffer[(y * inputShape[2] + x) * channels + 0] = r.toByte()
-                    buffer[(y * inputShape[2] + x) * channels + 1] = g.toByte()
-                    buffer[(y * inputShape[2] + x) * channels + 2] = b.toByte()
-                }
-            }
-        }
-        return buffer
-    }
-
-    private fun dequantUint8(
-        value: Byte, quantScale: Float, quantZeroPoint: Long, tensorType: Int
-    ): Float {
-        return if (tensorType == AiliaTFLite.AILIA_TFLITE_TENSOR_TYPE_INT8) {
-            ((value.toInt() - quantZeroPoint).toFloat() * quantScale)
-        } else {
-            (((value.toInt() and 0xFF) - quantZeroPoint).toFloat() * quantScale)
-        }
-    }
-
-    fun yolox_main(modelData: ByteArray?, bitmap: Bitmap, canvas: Canvas, paint: Paint, w: Int, h: Int, env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
-        if (modelData == null){
-            Log.e(TAG, "Failed to open model data")
-            return false;
-        }
-
-        val tflite = AiliaTFLite()
-        if (!tflite.open(modelData, env)) {
-            Log.e(TAG, "Failed to open TFLite model")
-            return false
-        }
-
-        if (!tflite.allocateTensors()) {
-            Log.e(TAG, "Failed to allocate tensors")
-            tflite.close()
-            return false
-        }
-
-        val inputTensorIndex = tflite.getInputTensorIndex(0)
-        val inputShape = tflite.getInputTensorShape(0) ?: run {
-            Log.e(TAG, "Failed to get input tensor shape")
-            tflite.close()
-            return false
-        }
-
-        val inputTensorType = tflite.getInputTensorType(0)
-        val inputBuffer = loadImage(inputTensorType, ByteArray(inputShape[1] * inputShape[2] * inputShape[3]), inputShape, bitmap)
-
-        if (!tflite.setTensorData(inputTensorIndex, inputBuffer)) {
-            Log.e(TAG, "Failed to set input tensor data")
-            tflite.close()
-            return false
-        }
-
-        // Measure time
-        val startTime = System.nanoTime()
-        if (!tflite.predict()) {
-            Log.e(TAG, "Predict failed")
-            tflite.close()
-            return false
-        }
-        val endTime = System.nanoTime()
-        Log.i(TAG, "Inference time: ${(endTime - startTime) / 1000000} ms")
-
-        val outputTensorIndex = tflite.getOutputTensorIndex(0)
-        val outputShape = tflite.getOutputTensorShape(0) ?: run {
-            Log.e(TAG, "Failed to get output tensor shape")
-            tflite.close()
-            return false
-        }
-
-        val outputType = tflite.getOutputTensorType(0)
-        val outputData = tflite.getTensorData(outputTensorIndex) ?: run {
-            Log.e(TAG, "Failed to get output tensor data")
-            tflite.close()
-            return false
-        }
-
-        val quantCount = tflite.getTensorQuantizationCount(outputTensorIndex)
-        if (quantCount != 1) {
-            Log.e(TAG, "Unexpected quantization count: $quantCount")
-            tflite.close()
-            return false
-        }
-
-        val quantScale = tflite.getTensorQuantizationScale(outputTensorIndex)?.get(0) ?: 1.0f
-        val quantZeroPoint = tflite.getTensorQuantizationZeroPoint(outputTensorIndex)?.get(0) ?: 0L
-
-        if (outputType == AiliaTFLite.AILIA_TFLITE_TENSOR_TYPE_FLOAT32) {
-            postProcessYoloxFp32(inputShape, outputShape, outputData as FloatArray, outputType)
-        } else if (outputType == AiliaTFLite.AILIA_TFLITE_TENSOR_TYPE_UINT8 ||
-            outputType == AiliaTFLite.AILIA_TFLITE_TENSOR_TYPE_INT8) {
-            postProcessYolox(inputShape, outputShape, outputData, outputType, quantScale, quantZeroPoint, canvas, paint, w, h)
-        }
-
-        tflite.close()
-        return true
-    }
-
     // COCO categories for object detection
     private val COCO_CATEGORY = arrayOf(
         "person",
@@ -228,8 +100,133 @@ class AiliaTFLiteSample {
         "toothbrush",
     )
 
-    private fun postProcessYolox(inputShape: IntArray, outputShape: IntArray, outputBuffer: ByteArray, outputTensorType: Int,
-                                 quantScale: Float, quantZeroPoint: Long, canvas: Canvas, paint: Paint, w: Int, h: Int) {
+    private fun loadImage(inputTensorType: Int, inputBuffer: ByteArray, inputShape: IntArray, bitmap : Bitmap): ByteArray {
+        Log.i(TAG, ""+inputShape[0].toString()+" "+inputShape[1].toString()+ " "+inputShape[2].toString()+ " "+inputShape[3].toString())
+        val scaledBitmap = Bitmap.createScaledBitmap(bitmap, inputShape[2], inputShape[1], true)
+        val channels = inputShape[3]
+        val buffer = ByteArray(inputShape[1] * inputShape[2] * channels)
+
+        val pixels = IntArray(inputShape[1] * inputShape[2])
+        scaledBitmap.getPixels(pixels, 0, inputShape[2], 0, 0, inputShape[2], inputShape[1])
+
+        for (y in 0 until inputShape[1]) {
+            for (x in 0 until inputShape[2]) {
+                val pixel = pixels[y * inputShape[2] + x]
+                val r = (pixel shr 16) and 0xFF
+                val g = (pixel shr 8) and 0xFF
+                val b = pixel and 0xFF
+                buffer[(y * inputShape[2] + x) * channels + 0] = b.toByte()
+                buffer[(y * inputShape[2] + x) * channels + 1] = g.toByte()
+                buffer[(y * inputShape[2] + x) * channels + 2] = r.toByte()
+            }
+        }
+        return buffer
+    }
+
+    private fun dequantUint8(
+        value: Byte, quantScale: Float, quantZeroPoint: Long, tensorType: Int
+    ): Float {
+        return if (tensorType == AiliaTFLite.AILIA_TFLITE_TENSOR_TYPE_INT8) {
+            ((value.toInt() - quantZeroPoint).toFloat() * quantScale)
+        } else {
+            (((value.toInt() and 0xFF) - quantZeroPoint).toFloat() * quantScale)
+        }
+    }
+
+    fun yolox_main(modelData: ByteArray?, bitmap: Bitmap, canvas: Canvas, paint: Paint, w: Int, h: Int, env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
+        if (modelData == null){
+            Log.e(TAG, "Failed to open model data")
+            return false;
+        }
+
+        val tflite = AiliaTFLite()
+        if (!tflite.open(modelData, env)) {
+            Log.e(TAG, "Failed to open TFLite model")
+            return false
+        }
+
+        if (!tflite.allocateTensors()) {
+            Log.e(TAG, "Failed to allocate tensors")
+            tflite.close()
+            return false
+        }
+
+        val inputTensorIndex = tflite.getInputTensorIndex(0)
+        val inputShape = tflite.getInputTensorShape(0) ?: run {
+            Log.e(TAG, "Failed to get input tensor shape")
+            tflite.close()
+            return false
+        }
+
+        val inputTensorType = tflite.getInputTensorType(0)
+        val inputBuffer = loadImage(inputTensorType, ByteArray(inputShape[1] * inputShape[2] * inputShape[3]), inputShape, bitmap)
+
+        if (!tflite.setTensorData(inputTensorIndex, inputBuffer)) {
+            Log.e(TAG, "Failed to set input tensor data")
+            tflite.close()
+            return false
+        }
+
+        // Measure time
+        val startTime = System.nanoTime()
+        if (!tflite.predict()) {
+            Log.e(TAG, "Predict failed")
+            tflite.close()
+            return false
+        }
+        val endTime = System.nanoTime()
+        Log.i(TAG, "Inference time: ${(endTime - startTime) / 1000000} ms")
+
+        val outputTensorIndex = tflite.getOutputTensorIndex(0)
+        val outputShape = tflite.getOutputTensorShape(0) ?: run {
+            Log.e(TAG, "Failed to get output tensor shape")
+            tflite.close()
+            return false
+        }
+
+        val outputType = tflite.getOutputTensorType(0)
+        val outputData = tflite.getTensorData(outputTensorIndex) ?: run {
+            Log.e(TAG, "Failed to get output tensor data")
+            tflite.close()
+            return false
+        }
+
+        val quantCount = tflite.getTensorQuantizationCount(outputTensorIndex)
+        if (quantCount != 1) {
+            Log.e(TAG, "Unexpected quantization count: $quantCount")
+            tflite.close()
+            return false
+        }
+
+        val quantScale = tflite.getTensorQuantizationScale(outputTensorIndex)?.get(0) ?: 1.0f
+        val quantZeroPoint = tflite.getTensorQuantizationZeroPoint(outputTensorIndex)?.get(0) ?: 0L
+
+        postProcessYolox(inputShape, outputShape, outputData, outputType, quantScale, quantZeroPoint, canvas, paint, w, h)
+
+        tflite.close()
+        return true
+    }
+
+
+
+    data class RectF(var left: Float, var top: Float, var right: Float, var bottom: Float) {
+        fun width() = right - left
+        fun height() = bottom - top
+        fun area() = width() * height()
+    }
+
+    private fun postProcessYolox(
+        inputShape: IntArray,
+        outputShape: IntArray,
+        outputBuffer: ByteArray,
+        outputTensorType: Int,
+        quantScale: Float,
+        quantZeroPoint: Long,
+        canvas: Canvas,
+        paint: Paint,
+        originalW: Int,
+        originalH: Int
+    ) {
         val ih = inputShape[1]
         val iw = inputShape[2]
         val oh = arrayOf(ih / 8, ih / 16, ih / 32)
@@ -240,6 +237,10 @@ class AiliaTFLiteSample {
             Log.e(TAG, "Error! YOLOX output_shape[1,2] mismatch")
             return
         }
+
+        val boxes = mutableListOf<RectF>()
+        val scores = mutableListOf<Float>()
+        val categories = mutableListOf<Int>()
 
         var bufIndex = 0
         for (s in 0..2) {
@@ -273,76 +274,73 @@ class AiliaTFLiteSample {
                         val bbW = exp(w) * stride + 1f
                         val bbH = exp(h) * stride + 1f
 
-                        Log.i(TAG, "s=$s, x=$x, y=$y, class=[$maxClass, ${COCO_CATEGORY[maxClass]}], score=$score, " +
-                                "cx=$cx, cy=$cy, w=$w, h=$h, c=$c, bb=[$bbCx,$bbCy,$bbW,$bbH]")
-
-                        var r:Float = 8.0f
-                        canvas.drawRect(
-                            bbCx,
-                            bbCy,
-                            bbCx + bbW,
-                            bbCy + bbH,
-                            paint
-                        )
+                        boxes.add(RectF(bbCx / iw, bbCy / ih, (bbCx + bbW) / iw, (bbCy + bbH) / ih))
+                        scores.add(score)
+                        categories.add(maxClass)
                     }
 
                     bufIndex += numElements
                 }
             }
         }
+
+        // Apply NMS
+        val selectedIndices = applyNMS(boxes, scores, 0.25f, 0.45f)  // threshold and IOU threshold values
+
+        for (i in selectedIndices) {
+            val bbox = boxes[i]
+            //paint.color = colors[categories[i] % colors.size] // Set the color based on the category
+            canvas.drawRect(
+                bbox.left * originalW,
+                bbox.top * originalH,
+                bbox.right * originalW,
+                bbox.bottom * originalH,
+                paint
+            )
+        }
     }
 
-    private fun postProcessYoloxFp32(inputShape: IntArray, outputShape: IntArray, outputBuffer: FloatArray, outputTensorType: Int) {
-        val ih = inputShape[1]
-        val iw = inputShape[2]
-        val oh = arrayOf(ih / 8, ih / 16, ih / 32)
-        val ow = arrayOf(iw / 8, iw / 16, iw / 32)
-        val numCells = oh[0] * ow[0] + oh[1] * ow[1] + oh[2] * ow[2]
-        val numElements = 5 + COCO_CATEGORY.size
-        if (numCells != outputShape[1] || numElements != outputShape[2]) {
-            Log.e(TAG, "Error! YOLOX output_shape[1,2] mismatch")
-            return
-        }
+    private fun applyNMS(boxes: List<RectF>, scores: List<Float>, scoreThreshold: Float, iouThreshold: Float): List<Int> {
+        val indices = scores.mapIndexed { index, score -> index to score }
+            .filter { it.second > scoreThreshold }
+            .sortedByDescending { it.second }
+            .map { it.first }
 
-        var bufIndex = 0
-        for (s in 0..2) {
-            val stride = 2f.pow(3 + s)
-            for (y in 0 until oh[s]) {
-                for (x in 0 until ow[s]) {
-                    var maxScore = 0f
-                    var maxClass = 0
+        val selectedIndices = mutableListOf<Int>()
+        val active = BooleanArray(indices.size) { true }
 
-                    for (cls in 0 until COCO_CATEGORY.size) {
-                        val score = outputBuffer[bufIndex + 5 + cls]
-                        if (score > maxScore) {
-                            maxScore = score
-                            maxClass = cls
-                        }
+        for (i in indices.indices) {
+            if (!active[i]) continue
+            val index = indices[i]
+            selectedIndices.add(index)
+            for (j in i + 1 until indices.size) {
+                if (active[j]) {
+                    val otherIndex = indices[j]
+                    val iou = computeIOU(boxes[index], boxes[otherIndex])
+                    if (iou > iouThreshold) {
+                        active[j] = false
                     }
-
-                    var score = maxScore
-                    val c = outputBuffer[bufIndex + 4]
-                    score *= c
-
-                    val detThreshold = 0.5f
-                    if (score >= detThreshold) {
-                        val cx = outputBuffer[bufIndex + 0]
-                        val cy = outputBuffer[bufIndex + 1]
-                        val w = outputBuffer[bufIndex + 2]
-                        val h = outputBuffer[bufIndex + 3]
-
-                        val bbCx = (cx + x) * stride
-                        val bbCy = (cy + y) * stride
-                        val bbW = exp(w) * stride + 1f
-                        val bbH = exp(h) * stride + 1f
-
-                        Log.i(TAG, "s=$s, x=$x, y=$y, class=[$maxClass, ${COCO_CATEGORY[maxClass]}], score=$score, " +
-                                "cx=$cx, cy=$cy, w=$w, h=$h, c=$c, bb=[$bbCx,$bbCy,$bbW,$bbH]")
-                    }
-
-                    bufIndex += numElements
                 }
             }
         }
+        return selectedIndices
     }
+
+    private fun computeIOU(box1: RectF, box2: RectF): Float {
+        val intersectionLeft = maxOf(box1.left, box2.left)
+        val intersectionTop = maxOf(box1.top, box2.top)
+        val intersectionRight = minOf(box1.right, box2.right)
+        val intersectionBottom = minOf(box1.bottom, box2.bottom)
+
+        val intersectionWidth = maxOf(0f, intersectionRight - intersectionLeft)
+        val intersectionHeight = maxOf(0f, intersectionBottom - intersectionTop)
+        val intersectionArea = intersectionWidth * intersectionHeight
+
+        val box1Area = (box1.right - box1.left) * (box1.bottom - box1.top)
+        val box2Area = (box2.right - box2.left) * (box2.bottom - box2.top)
+
+        val unionArea = box1Area + box2Area - intersectionArea
+        return if (unionArea <= 0) 0f else intersectionArea / unionArea
+    }
+
 }
