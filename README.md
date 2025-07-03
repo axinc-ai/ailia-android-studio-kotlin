@@ -11,13 +11,11 @@ Demo project of ailia SDK with Android Studio (Kotlin)
 
 ## Setup
 
-Please put ailia libraries here.
+Download dependent libraries via submodule.
 
 ```
-ailia-sdk-jni/src/main/jniLibs/arm64-v8a/libailia.so
-ailia-sdk-jni/src/main/jniLibs/armeabi-v7a/libailia.so
-ailia-sdk-jni/src/main/jniLibs/x86/libailia.so
-ailia-sdk-jni/src/main/jniLibs/x86_64/libailia.so
+git submodule init
+git submodule update
 ```
 
 ## Detail
