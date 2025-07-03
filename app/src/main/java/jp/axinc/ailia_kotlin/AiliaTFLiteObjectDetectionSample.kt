@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Color
 import android.util.Log
 import android.widget.ImageView
 import axip.ailia_tflite.AiliaTFLite
@@ -163,22 +164,22 @@ class AiliaTFLiteObjectDetectionSample {
             val stride = 2f.pow(3 + s)
             for (y in 0 until oh[s]) {
                 for (x in 0 until ow[s]) {
-                    var maxScore = 0.toByte()
+                    var maxScore = 0
                     var maxClass = 0
 
                     for (cls in 0 until CocoAndImageNetLabels.COCO_CATEGORY.size) {
-                        val score = outputBuffer[bufIndex + 5 + cls]
+                        val score = outputBuffer[bufIndex + 5 + cls].toInt() and 0xFF // Byte -> Int -> UByte
                         if (score > maxScore) {
                             maxScore = score
                             maxClass = cls
                         }
                     }
 
-                    var score = dequantUint8(maxScore, quantScale, quantZeroPoint, outputTensorType)
+                    var score = dequantUint8(maxScore.toByte(), quantScale, quantZeroPoint, outputTensorType)
                     val c = dequantUint8(outputBuffer[bufIndex + 4], quantScale, quantZeroPoint, outputTensorType)
                     score *= c
 
-                    val detThreshold = 0.25f
+                    val detThreshold = 0.5f
                     if (score >= detThreshold) {
                         val cx = dequantUint8(outputBuffer[bufIndex + 0], quantScale, quantZeroPoint, outputTensorType)
                         val cy = dequantUint8(outputBuffer[bufIndex + 1], quantScale, quantZeroPoint, outputTensorType)
@@ -193,6 +194,23 @@ class AiliaTFLiteObjectDetectionSample {
                         boxes.add(RectF(bbCx / iw, bbCy / ih, (bbCx + bbW) / iw, (bbCy + bbH) / ih))
                         scores.add(score)
                         categories.add(maxClass)
+
+                        Log.i(TAG, "s=$s, x=$x, y=$y, class=[$maxClass, ${CocoAndImageNetLabels.COCO_CATEGORY[maxClass]}], score=$score, " +
+                                "cx=$cx, cy=$cy, w=$w, h=$h, c=$c, bb=[$bbCx,$bbCy,$bbW,$bbH]")
+
+                        val paint2 = Paint().apply {
+                            style = Paint.Style.STROKE // 塗りつぶしを無効にし、枠線のみを描画
+                            color = Color.RED // 境界線の色を設定
+                            strokeWidth = 5f // 境界線の太さを設定
+                        }
+
+                        canvas.drawRect(
+                            bbCx / iw * originalW,
+                            bbCy / ih * originalH,
+                            (bbCx + bbW) / iw * originalW,
+                            (bbCy + bbH) / ih * originalH,
+                            paint2
+                        )
                     }
 
                     bufIndex += numElements
@@ -206,6 +224,7 @@ class AiliaTFLiteObjectDetectionSample {
         for (i in selectedIndices) {
             val bbox = boxes[i]
             //paint.color = colors[categories[i] % colors.size] // Set the color based on the category
+            /*
             canvas.drawRect(
                 bbox.left * originalW,
                 bbox.top * originalH,
@@ -213,6 +232,7 @@ class AiliaTFLiteObjectDetectionSample {
                 bbox.bottom * originalH,
                 paint
             )
+            */
         }
     }
 
