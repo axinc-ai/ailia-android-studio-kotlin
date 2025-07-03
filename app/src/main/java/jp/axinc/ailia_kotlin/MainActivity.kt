@@ -144,6 +144,9 @@ class MainActivity : AppCompatActivity() {
                 Log.i("AILIA_Error", "No object detected.")
                 return false
             }
+
+            poseEstimator.close()
+            ailia.close()
             true
         } catch (e: Exception) {
             Log.i("AILIA_Error", e.javaClass.name + ": " + e.message)
@@ -187,15 +190,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     fun ailia_tokenize(): Boolean {
-        val tokenizer: axip.ailia_tokenizer.AiliaTokenizer = axip.ailia_tokenizer.AiliaTokenizer(tokenizerType = axip.ailia_tokenizer.AiliaTokenizer.AILIA_TOKENIZER_TYPE_WHISPER);
-        //ailiaTokenizer.loadFiles(dictionaryPath = dictionaryPath, vocabPath = vocabPath)
-        var tokens = tokenizer.encode("Hello world.");
-        var tokens_text = "";
+        val tokenizer: axip.ailia_tokenizer.AiliaTokenizer = axip.ailia_tokenizer.AiliaTokenizer(tokenizerType = axip.ailia_tokenizer.AiliaTokenizer.AILIA_TOKENIZER_TYPE_WHISPER)
+        //tokenizer.loadFiles(dictionaryPath = dictionaryPath, vocabPath = vocabPath)
+        var tokens = tokenizer.encode("Hello world.")
+        var tokens_text = "Tokens : "
         for (i in 0 until tokens.indices.count()){
-            tokens_text += tokens[i];
+            tokens_text += tokens[i].toString() + " , "
         }
-        Log.i("AILIA_Main", tokens_text);
-        //tokenizer.close();
+        Log.i("AILIA_Main", tokens_text)
+        tokenizer.close()
         return true;
     }
 
