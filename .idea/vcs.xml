@@ -3,5 +3,7 @@
   <component name="VcsDirectoryMappings">
     <mapping directory="$PROJECT_DIR$/.." vcs="Git" />
     <mapping directory="$PROJECT_DIR$" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/ailia-sdk-jni" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/ailia-tokenizer-jni" vcs="Git" />
   </component>
 </project>

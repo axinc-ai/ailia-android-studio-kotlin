@@ -1,3 +1,6 @@
 [submodule "ailia-sdk-jni"]
 	path = ailia-sdk-jni
 	url = git@github.com:axinc-ai/ailia-sdk-jni.git
+[submodule "ailia-tokenizer-jni"]
+	path = ailia-tokenizer-jni
+	url = git@github.com:axinc-ai/ailia-tokenizer-jni.git
