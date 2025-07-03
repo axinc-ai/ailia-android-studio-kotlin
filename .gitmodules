@@ -1,0 +1,3 @@
+[submodule "ailia-sdk-jni"]
+	path = ailia-sdk-jni
+	url = git@github.com:axinc-ai/ailia-sdk-jni.git
