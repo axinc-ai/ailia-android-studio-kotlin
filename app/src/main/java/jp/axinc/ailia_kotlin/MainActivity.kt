@@ -107,6 +107,18 @@ class MainActivity : AppCompatActivity() {
             canvas.drawARGB(0, 0, 0, 0)
             paint.color = Color.parseColor("#FFFFFF")
 
+            val paint2 = Paint().apply {
+                style = Paint.Style.STROKE // 塗りつぶしを無効にし、枠線のみを描画
+                color = Color.RED // 境界線の色を設定
+                strokeWidth = 5f // 境界線の太さを設定
+            }
+
+            val text = Paint().apply {
+                color = Color.BLACK // テキストの色
+                textSize = 50f // テキストサイズ
+                isAntiAlias = true // アンチエイリアシングを有効にすることで、テキストをなめらかに表示
+            }
+
             // Pose Estimation
             var proto: ByteArray? = loadRawFile(R.raw.lightweight_human_pose_proto)
             var model: ByteArray? = loadRawFile(R.raw.lightweight_human_pose_weight)
@@ -126,7 +138,7 @@ class MainActivity : AppCompatActivity() {
             // TFLite Object Detection
             var yolox_model: ByteArray? = loadRawFile(R.raw.yolox_tiny)
             var tflite_detection_sample = AiliaTFLiteObjectDetectionSample()
-            tflite_detection_sample.detection(yolox_model, person_bmp, canvas, paint, w, h)
+            tflite_detection_sample.detection(yolox_model, person_bmp, canvas, paint2, text, w, h)
         } catch (e: Exception) {
             Log.i("AILIA_Error", e.javaClass.name + ": " + e.message)
         }

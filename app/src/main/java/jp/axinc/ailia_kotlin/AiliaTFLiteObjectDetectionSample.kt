@@ -50,7 +50,7 @@ class AiliaTFLiteObjectDetectionSample {
         }
     }
 
-    fun detection(modelData: ByteArray?, bitmap: Bitmap, canvas: Canvas, paint: Paint, w: Int, h: Int, env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
+    fun detection(modelData: ByteArray?, bitmap: Bitmap, canvas: Canvas, paint: Paint, text: Paint, w: Int, h: Int, env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
         if (modelData == null){
             Log.e(TAG, "Failed to open model data")
             return false;
@@ -118,7 +118,7 @@ class AiliaTFLiteObjectDetectionSample {
         val quantScale = tflite.getTensorQuantizationScale(outputTensorIndex)?.get(0) ?: 1.0f
         val quantZeroPoint = tflite.getTensorQuantizationZeroPoint(outputTensorIndex)?.get(0) ?: 0L
 
-        postProcessYolox(inputShape, outputShape, outputData, outputType, quantScale, quantZeroPoint, canvas, paint, w, h)
+        postProcessYolox(inputShape, outputShape, outputData, outputType, quantScale, quantZeroPoint, canvas, paint, text, w, h)
 
         tflite.close()
         return true
@@ -141,6 +141,7 @@ class AiliaTFLiteObjectDetectionSample {
         quantZeroPoint: Long,
         canvas: Canvas,
         paint: Paint,
+        text: Paint,
         originalW: Int,
         originalH: Int
     ) {
@@ -191,26 +192,12 @@ class AiliaTFLiteObjectDetectionSample {
                         val bbW = exp(w) * stride + 1f
                         val bbH = exp(h) * stride + 1f
 
-                        boxes.add(RectF(bbCx / iw, bbCy / ih, (bbCx + bbW) / iw, (bbCy + bbH) / ih))
+                        boxes.add(RectF((bbCx - bbW/2) / iw, (bbCy - bbH/2) / ih, (bbCx + bbW/2) / iw, (bbCy + bbH/2) / ih))
                         scores.add(score)
                         categories.add(maxClass)
 
                         Log.i(TAG, "s=$s, x=$x, y=$y, class=[$maxClass, ${CocoAndImageNetLabels.COCO_CATEGORY[maxClass]}], score=$score, " +
                                 "cx=$cx, cy=$cy, w=$w, h=$h, c=$c, bb=[$bbCx,$bbCy,$bbW,$bbH]")
-
-                        val paint2 = Paint().apply {
-                            style = Paint.Style.STROKE // 塗りつぶしを無効にし、枠線のみを描画
-                            color = Color.RED // 境界線の色を設定
-                            strokeWidth = 5f // 境界線の太さを設定
-                        }
-
-                        canvas.drawRect(
-                            bbCx / iw * originalW,
-                            bbCy / ih * originalH,
-                            (bbCx + bbW) / iw * originalW,
-                            (bbCy + bbH) / ih * originalH,
-                            paint2
-                        )
                     }
 
                     bufIndex += numElements
@@ -223,8 +210,6 @@ class AiliaTFLiteObjectDetectionSample {
 
         for (i in selectedIndices) {
             val bbox = boxes[i]
-            //paint.color = colors[categories[i] % colors.size] // Set the color based on the category
-            /*
             canvas.drawRect(
                 bbox.left * originalW,
                 bbox.top * originalH,
@@ -232,7 +217,7 @@ class AiliaTFLiteObjectDetectionSample {
                 bbox.bottom * originalH,
                 paint
             )
-            */
+            canvas.drawText(CocoAndImageNetLabels.COCO_CATEGORY[categories[i]] + " " + scores[i].toString(), bbox.left * originalW, bbox.top * originalH, text)
         }
     }
 
