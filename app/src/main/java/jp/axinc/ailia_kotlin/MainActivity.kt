@@ -63,7 +63,22 @@ class MainActivity : AppCompatActivity() {
         resources.openRawResource(resourceId).use { `in` -> return inputStreamToByteArray(`in`) }
     }
 
-
+    @Throws(IOException::class)
+    fun loadRawImage(bmp: Bitmap): ByteArray {
+        val w = bmp.width
+        val h = bmp.height
+        val pixels = IntArray(w * h)
+        bmp.getPixels(pixels, 0, w, 0, 0, w, h)
+        val bout = ByteArrayOutputStream()
+        val out = DataOutputStream(bout)
+        for (i in pixels) {
+            out.writeByte(i shr 16 and 0xff) //r
+            out.writeByte(i shr 8 and 0xff) //g
+            out.writeByte(i shr 0 and 0xff) //b
+            out.writeByte(i shr 24 and 0xff) //a
+        }
+        return bout.toByteArray()
+    }
 
     protected fun ailia_test(savedInstanceState: Bundle?) {
         try {
@@ -76,12 +91,28 @@ class MainActivity : AppCompatActivity() {
             // Create result image
             val image = findViewById<View>(R.id.imageView) as ImageView
 
+            //get test image
+            val img = loadRawImage(bmp)
+            val w = bmp.width
+            val h = bmp.height
+
+            //display test image
+            val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(img))
+            image.setImageBitmap(bitmap)
+
+            //create canvas
+            val canvas = Canvas(bitmap)
+            val paint = Paint()
+            canvas.drawARGB(0, 0, 0, 0)
+            paint.color = Color.parseColor("#FFFFFF")
+
             // Pose Estimation
             var proto: ByteArray? = loadRawFile(R.raw.lightweight_human_pose_proto)
             var model: ByteArray? = loadRawFile(R.raw.lightweight_human_pose_weight)
             var pose_estimator_sample = AiliaPoseEstimatorSample();
             var selectedEnv = pose_estimator_sample.ailia_environment(cacheDir.absolutePath)
-            var success = pose_estimator_sample.ailia_pose_estimator(selectedEnv.id, proto, model, bmp, image)
+            var success = pose_estimator_sample.ailia_pose_estimator(selectedEnv.id, proto, model, img, canvas, paint, w, h)
 
             // Tokenizer
             var tokenizer_sample = AiliaTokenizerSample()
@@ -90,7 +121,7 @@ class MainActivity : AppCompatActivity() {
             // TFLite Object Detection
             var tflite_model: ByteArray? = loadRawFile(R.raw.yolox_tiny)
             var tflite_sample = AiliaTFLiteSample()
-            tflite_sample.yolox_main(tflite_model, bmp)
+            tflite_sample.yolox_main(tflite_model, bmp, canvas, paint, w, h)
         } catch (e: Exception) {
             Log.i("AILIA_Error", e.javaClass.name + ": " + e.message)
         }

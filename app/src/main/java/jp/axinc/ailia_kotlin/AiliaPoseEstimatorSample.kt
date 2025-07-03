@@ -19,23 +19,6 @@ import java.io.IOException
 import java.nio.ByteBuffer
 
 class AiliaPoseEstimatorSample {
-    @Throws(IOException::class)
-    fun loadRawImage(bmp: Bitmap): ByteArray {
-        val w = bmp.width
-        val h = bmp.height
-        val pixels = IntArray(w * h)
-        bmp.getPixels(pixels, 0, w, 0, 0, w, h)
-        val bout = ByteArrayOutputStream()
-        val out = DataOutputStream(bout)
-        for (i in pixels) {
-            out.writeByte(i shr 16 and 0xff) //r
-            out.writeByte(i shr 8 and 0xff) //g
-            out.writeByte(i shr 0 and 0xff) //b
-            out.writeByte(i shr 24 and 0xff) //a
-        }
-        return bout.toByteArray()
-    }
-
     fun ailia_environment(cache_dir: String) : AiliaEnvironment {
         // Detect GPU Environment
         Ailia.SetTemporaryCachePath(cache_dir)
@@ -57,7 +40,7 @@ class AiliaPoseEstimatorSample {
         )
         return selectedEnv;
     }
-    fun ailia_pose_estimator(envId: Int, proto: ByteArray?, model: ByteArray?, bmp: Bitmap, image: ImageView): Boolean {
+    fun ailia_pose_estimator(envId: Int, proto: ByteArray?, model: ByteArray?, img: ByteArray, canvas: Canvas, paint: Paint, w: Int, h: Int): Boolean {
         return try {
             //create ailia pose estimator
             val ailia = AiliaModel(
@@ -68,22 +51,6 @@ class AiliaPoseEstimatorSample {
             )
             val poseEstimator =
                 AiliaPoseEstimatorModel(ailia.handle, AiliaPoseEstimatorAlgorithm.LW_HUMAN_POSE)
-
-            //get test image
-            val img = loadRawImage(bmp)
-            val w = bmp.width
-            val h = bmp.height
-
-            //display test image
-            val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(img))
-            image.setImageBitmap(bitmap)
-
-            //create canvas
-            val canvas = Canvas(bitmap)
-            val paint = Paint()
-            canvas.drawARGB(0, 0, 0, 0)
-            paint.color = Color.parseColor("#FFFFFF")
 
             //run
             poseEstimator.compute(img, w * 4, w, h, AiliaImageFormat.RGBA)
@@ -106,8 +73,8 @@ class AiliaPoseEstimatorSample {
                     //display result
                     var r:Float = 8.0f
                     canvas.drawCircle(
-                        (bitmap.getWidth() * p.x).toFloat(),
-                        (bitmap.getHeight() * p.y).toFloat(),
+                        (w * p.x).toFloat(),
+                        (h * p.y).toFloat(),
                         r,
                         paint
                     )

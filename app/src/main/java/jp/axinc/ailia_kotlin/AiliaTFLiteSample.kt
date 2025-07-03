@@ -2,7 +2,10 @@ package jp.axinc.ailia_kotlin
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.util.Log
+import android.widget.ImageView
 import axip.ailia_tflite.AiliaTFLite
 import java.io.File
 import kotlin.math.exp
@@ -62,7 +65,7 @@ class AiliaTFLiteSample {
         }
     }
 
-    fun yolox_main(modelData: ByteArray?, bitmap: Bitmap, env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
+    fun yolox_main(modelData: ByteArray?, bitmap: Bitmap, canvas: Canvas, paint: Paint, w: Int, h: Int, env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
         if (modelData == null){
             Log.e(TAG, "Failed to open model data")
             return false;
@@ -97,14 +100,14 @@ class AiliaTFLiteSample {
         }
 
         // Measure time
-        //val startTime = SystemClock.elapsedRealtimeNanos()
+        val startTime = System.nanoTime()
         if (!tflite.predict()) {
             Log.e(TAG, "Predict failed")
             tflite.close()
             return false
         }
-        //val endTime = SystemClock.elapsedRealtimeNanos()
-        //Log.i(TAG, "Inference time: ${(endTime - startTime) / 1000} μs")
+        val endTime = System.nanoTime()
+        Log.i(TAG, "Inference time: ${(endTime - startTime) / 1000000} ms")
 
         val outputTensorIndex = tflite.getOutputTensorIndex(0)
         val outputShape = tflite.getOutputTensorShape(0) ?: run {
@@ -134,7 +137,7 @@ class AiliaTFLiteSample {
             postProcessYoloxFp32(inputShape, outputShape, outputData as FloatArray, outputType)
         } else if (outputType == AiliaTFLite.AILIA_TFLITE_TENSOR_TYPE_UINT8 ||
             outputType == AiliaTFLite.AILIA_TFLITE_TENSOR_TYPE_INT8) {
-            postProcessYolox(inputShape, outputShape, outputData, outputType, quantScale, quantZeroPoint)
+            postProcessYolox(inputShape, outputShape, outputData, outputType, quantScale, quantZeroPoint, canvas, paint, w, h)
         }
 
         tflite.close()
@@ -226,7 +229,7 @@ class AiliaTFLiteSample {
     )
 
     private fun postProcessYolox(inputShape: IntArray, outputShape: IntArray, outputBuffer: ByteArray, outputTensorType: Int,
-                                 quantScale: Float, quantZeroPoint: Long) {
+                                 quantScale: Float, quantZeroPoint: Long, canvas: Canvas, paint: Paint, w: Int, h: Int) {
         val ih = inputShape[1]
         val iw = inputShape[2]
         val oh = arrayOf(ih / 8, ih / 16, ih / 32)
@@ -258,7 +261,7 @@ class AiliaTFLiteSample {
                     val c = dequantUint8(outputBuffer[bufIndex + 4], quantScale, quantZeroPoint, outputTensorType)
                     score *= c
 
-                    val detThreshold = 0.5f
+                    val detThreshold = 0.25f
                     if (score >= detThreshold) {
                         val cx = dequantUint8(outputBuffer[bufIndex + 0], quantScale, quantZeroPoint, outputTensorType)
                         val cy = dequantUint8(outputBuffer[bufIndex + 1], quantScale, quantZeroPoint, outputTensorType)
@@ -272,6 +275,15 @@ class AiliaTFLiteSample {
 
                         Log.i(TAG, "s=$s, x=$x, y=$y, class=[$maxClass, ${COCO_CATEGORY[maxClass]}], score=$score, " +
                                 "cx=$cx, cy=$cy, w=$w, h=$h, c=$c, bb=[$bbCx,$bbCy,$bbW,$bbH]")
+
+                        var r:Float = 8.0f
+                        canvas.drawRect(
+                            bbCx,
+                            bbCy,
+                            bbCx + bbW,
+                            bbCy + bbH,
+                            paint
+                        )
                     }
 
                     bufIndex += numElements
