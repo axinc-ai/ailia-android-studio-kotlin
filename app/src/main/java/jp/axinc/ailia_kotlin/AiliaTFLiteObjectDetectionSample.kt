@@ -11,94 +11,10 @@ import java.io.File
 import kotlin.math.exp
 import kotlin.math.pow
 
-class AiliaTFLiteSample {
+class AiliaTFLiteObjectDetectionSample {
     companion object {
         private const val TAG = "AILIA_Main"
     }
-
-    // COCO categories for object detection
-    private val COCO_CATEGORY = arrayOf(
-        "person",
-        "bicycle",
-        "car",
-        "motorcycle",
-        "airplane",
-        "bus",
-        "train",
-        "truck",
-        "boat",
-        "traffic light",
-        "fire hydrant",
-        "stop sign",
-        "parking meter",
-        "bench",
-        "bird",
-        "cat",
-        "dog",
-        "horse",
-        "sheep",
-        "cow",
-        "elephant",
-        "bear",
-        "zebra",
-        "giraffe",
-        "backpack",
-        "umbrella",
-        "handbag",
-        "tie",
-        "suitcase",
-        "frisbee",
-        "skis",
-        "snowboard",
-        "sports ball",
-        "kite",
-        "baseball bat",
-        "baseball glove",
-        "skateboard",
-        "surfboard",
-        "tennis racket",
-        "bottle",
-        "wine glass",
-        "cup",
-        "fork",
-        "knife",
-        "spoon",
-        "bowl",
-        "banana",
-        "apple",
-        "sandwich",
-        "orange",
-        "broccoli",
-        "carrot",
-        "hot dog",
-        "pizza",
-        "donut",
-        "cake",
-        "chair",
-        "couch",
-        "potted plant",
-        "bed",
-        "dining table",
-        "toilet",
-        "tv",
-        "laptop",
-        "mouse",
-        "remote",
-        "keyboard",
-        "cell phone",
-        "microwave",
-        "oven",
-        "toaster",
-        "sink",
-        "refrigerator",
-        "book",
-        "clock",
-        "vase",
-        "scissors",
-        "teddy bear",
-        "hair drier",
-        "toothbrush",
-    )
 
     private fun loadImage(inputTensorType: Int, inputBuffer: ByteArray, inputShape: IntArray, bitmap : Bitmap): ByteArray {
         Log.i(TAG, ""+inputShape[0].toString()+" "+inputShape[1].toString()+ " "+inputShape[2].toString()+ " "+inputShape[3].toString())
@@ -133,7 +49,7 @@ class AiliaTFLiteSample {
         }
     }
 
-    fun yolox_main(modelData: ByteArray?, bitmap: Bitmap, canvas: Canvas, paint: Paint, w: Int, h: Int, env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
+    fun detection(modelData: ByteArray?, bitmap: Bitmap, canvas: Canvas, paint: Paint, w: Int, h: Int, env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
         if (modelData == null){
             Log.e(TAG, "Failed to open model data")
             return false;
@@ -232,7 +148,7 @@ class AiliaTFLiteSample {
         val oh = arrayOf(ih / 8, ih / 16, ih / 32)
         val ow = arrayOf(iw / 8, iw / 16, iw / 32)
         val numCells = oh[0] * ow[0] + oh[1] * ow[1] + oh[2] * ow[2]
-        val numElements = 5 + COCO_CATEGORY.size
+        val numElements = 5 + CocoAndImageNetLabels.COCO_CATEGORY.size
         if (numCells != outputShape[1] || numElements != outputShape[2]) {
             Log.e(TAG, "Error! YOLOX output_shape[1,2] mismatch")
             return
@@ -250,7 +166,7 @@ class AiliaTFLiteSample {
                     var maxScore = 0.toByte()
                     var maxClass = 0
 
-                    for (cls in 0 until COCO_CATEGORY.size) {
+                    for (cls in 0 until CocoAndImageNetLabels.COCO_CATEGORY.size) {
                         val score = outputBuffer[bufIndex + 5 + cls]
                         if (score > maxScore) {
                             maxScore = score

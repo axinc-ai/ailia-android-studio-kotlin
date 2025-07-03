@@ -83,18 +83,18 @@ class MainActivity : AppCompatActivity() {
     protected fun ailia_test(savedInstanceState: Bundle?) {
         try {
             // Load test image
-            val imageId: Int = R.raw.person
             val options = Options()
             options.inScaled = false
-            val bmp = BitmapFactory.decodeResource(this.resources, imageId, options)
+            val person_bmp = BitmapFactory.decodeResource(this.resources, R.raw.person, options)
+            val clock_bmp = BitmapFactory.decodeResource(this.resources, R.raw.clock, options)
 
             // Create result image
             val image = findViewById<View>(R.id.imageView) as ImageView
 
             //get test image
-            val img = loadRawImage(bmp)
-            val w = bmp.width
-            val h = bmp.height
+            val img = loadRawImage(person_bmp)
+            val w = person_bmp.width
+            val h = person_bmp.height
 
             //display test image
             val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
@@ -118,10 +118,15 @@ class MainActivity : AppCompatActivity() {
             var tokenizer_sample = AiliaTokenizerSample()
             tokenizer_sample.ailia_tokenize()
 
+            // TFLite Classification
+            var mobilenet_model: ByteArray? = loadRawFile(R.raw.mobilenetv2)
+            var tflite_classification_sample = AiliaTFLiteClassificationSample()
+            tflite_classification_sample.classification(mobilenet_model, clock_bmp)
+
             // TFLite Object Detection
-            var tflite_model: ByteArray? = loadRawFile(R.raw.yolox_tiny)
-            var tflite_sample = AiliaTFLiteSample()
-            tflite_sample.yolox_main(tflite_model, bmp, canvas, paint, w, h)
+            var yolox_model: ByteArray? = loadRawFile(R.raw.yolox_tiny)
+            var tflite_detection_sample = AiliaTFLiteObjectDetectionSample()
+            tflite_detection_sample.detection(yolox_model, person_bmp, canvas, paint, w, h)
         } catch (e: Exception) {
             Log.i("AILIA_Error", e.javaClass.name + ": " + e.message)
         }
