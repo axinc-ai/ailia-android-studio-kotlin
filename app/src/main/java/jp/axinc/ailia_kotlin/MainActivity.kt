@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
 import axip.ailia.*
+import axip.ailia_tokenizer.AiliaTokenizer
 import org.json.JSONObject
 import java.io.*
 //import android.R
@@ -178,9 +179,24 @@ class MainActivity : AppCompatActivity() {
             if (success) {
                 Log.i("AILIA_Main", "Success")
             }
+
+            ailia_tokenize()
         } catch (e: Exception) {
             Log.i("AILIA_Error", e.javaClass.name + ": " + e.message)
         }
+    }
+
+    fun ailia_tokenize(): Boolean {
+        val tokenizer: axip.ailia_tokenizer.AiliaTokenizer = axip.ailia_tokenizer.AiliaTokenizer(tokenizerType = axip.ailia_tokenizer.AiliaTokenizer.AILIA_TOKENIZER_TYPE_WHISPER);
+        //ailiaTokenizer.loadFiles(dictionaryPath = dictionaryPath, vocabPath = vocabPath)
+        var tokens = tokenizer.encode("Hello world.");
+        var tokens_text = "";
+        for (i in 0 until tokens.indices.count()){
+            tokens_text += tokens[i];
+        }
+        Log.i("AILIA_Main", tokens_text);
+        //tokenizer.close();
+        return true;
     }
 
     //Important : load ailia library
