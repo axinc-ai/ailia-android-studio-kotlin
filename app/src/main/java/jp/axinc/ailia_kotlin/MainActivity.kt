@@ -67,28 +67,30 @@ class MainActivity : AppCompatActivity() {
 
     protected fun ailia_test(savedInstanceState: Bundle?) {
         try {
+            // Load test image
             val imageId: Int = R.raw.person
             val options = Options()
             options.inScaled = false
             val bmp = BitmapFactory.decodeResource(this.resources, imageId, options)
 
+            // Create result image
             val image = findViewById<View>(R.id.imageView) as ImageView
 
-            // Samples
+            // Pose Estimation
             var proto: ByteArray? = loadRawFile(R.raw.lightweight_human_pose_proto)
             var model: ByteArray? = loadRawFile(R.raw.lightweight_human_pose_weight)
-
             var pose_estimator_sample = AiliaPoseEstimatorSample();
             var selectedEnv = pose_estimator_sample.ailia_environment(cacheDir.absolutePath)
             var success = pose_estimator_sample.ailia_pose_estimator(selectedEnv.id, proto, model, bmp, image)
 
-            // ForTest
-            if (success) {
-                Log.i("AILIA_Main", "Success")
-            }
-
+            // Tokenizer
             var tokenizer_sample = AiliaTokenizerSample()
             tokenizer_sample.ailia_tokenize()
+
+            // TFLite Object Detection
+            var tflite_model: ByteArray? = loadRawFile(R.raw.yolox_tiny)
+            var tflite_sample = AiliaTFLiteSample()
+            tflite_sample.yolox_main(tflite_model, bmp)
         } catch (e: Exception) {
             Log.i("AILIA_Error", e.javaClass.name + ": " + e.message)
         }
