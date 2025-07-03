@@ -9,3 +9,4 @@ dependencyResolutionManagement {
 rootProject.name = "ailia-kotlin"
 include ':app'
 include ':ailia-sdk-jni'
+include ':ailia-tokenizer-jni'
