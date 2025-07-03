@@ -14,10 +14,10 @@ Demo project of ailia SDK with Android Studio (Kotlin)
 Please put ailia libraries here.
 
 ```
-app/src/main/jniLibs/arm64-v8a/libailia.so
-app/src/main/jniLibs/armeabi-v7a/libailia.so
-app/src/main/jniLibs/x86/libailia.so
-app/src/main/jniLibs/x86_64/libailia.so
+ailia-sdk-jni/src/main/jniLibs/arm64-v8a/libailia.so
+ailia-sdk-jni/src/main/jniLibs/armeabi-v7a/libailia.so
+ailia-sdk-jni/src/main/jniLibs/x86/libailia.so
+ailia-sdk-jni/src/main/jniLibs/x86_64/libailia.so
 ```
 
 ## Detail
