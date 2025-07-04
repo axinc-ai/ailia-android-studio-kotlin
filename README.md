@@ -18,9 +18,13 @@ git submodule init
 git submodule update
 ```
 
-## Detail
+## Supported models
 
-This demo estimate keypoints of person.
+### ailia SDK
+
+#### Light Weight Human Pose Estimation
+
+Estimate keypoints of person.
 
 Input
 
@@ -30,6 +34,12 @@ Output
 
 ![input image](./demo.png)
 
-## Main code
+### ailia TFLite Runtime
 
-[MainActivity.kt](/app/src/main/java/jp/axinc/ailia_kotlin/MainActivity.kt)
+#### YOLOX
+
+Estimate bounding box of object.
+
+### ailia Tokenizer
+
+#### TBD
