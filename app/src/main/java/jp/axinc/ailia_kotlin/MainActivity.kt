@@ -130,6 +130,10 @@ class MainActivity : AppCompatActivity() {
             var tokenizer_sample = AiliaTokenizerSample()
             tokenizer_sample.ailia_tokenize()
 
+            // Tracker
+            var tracker_sample = AiliaTrackerSample()
+            tracker_sample.byte_track()
+
             // TFLite Classification
             var mobilenet_model: ByteArray? = loadRawFile(R.raw.mobilenetv2)
             var tflite_classification_sample = AiliaTFLiteClassificationSample()
