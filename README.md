@@ -1,4 +1,4 @@
-# ailia-android-studio-kotlin
+# ailia MODELS Kotlin
 
 Demo project of ailia SDK with Android Studio (Kotlin)
 
