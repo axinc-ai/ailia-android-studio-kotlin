@@ -32,13 +32,15 @@ Input
 
 Output
 
-![input image](./demo.png)
+![input image](./demo/pose_estimation.png)
 
 ### ailia TFLite Runtime
 
 #### YOLOX
 
 Estimate bounding box of object.
+
+![input image](./demo/yolox.png)
 
 ### ailia Tracker
 
