@@ -273,10 +273,26 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun imageProxyToBitmap(image: ImageProxy): Bitmap {
-        val buffer = image.planes[0].buffer
-        val bytes = ByteArray(buffer.remaining())
-        buffer.get(bytes)
-        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        val yBuffer = image.planes[0].buffer // Y
+        val uBuffer = image.planes[1].buffer // U
+        val vBuffer = image.planes[2].buffer // V
+
+        val ySize = yBuffer.remaining()
+        val uSize = uBuffer.remaining()
+        val vSize = vBuffer.remaining()
+
+        val nv21 = ByteArray(ySize + uSize + vSize)
+
+        // U and V are swapped
+        yBuffer.get(nv21, 0, ySize)
+        vBuffer.get(nv21, ySize, vSize)
+        uBuffer.get(nv21, ySize + vSize, uSize)
+
+        val yuvImage = android.graphics.YuvImage(nv21, android.graphics.ImageFormat.NV21, image.width, image.height, null)
+        val out = java.io.ByteArrayOutputStream()
+        yuvImage.compressToJpeg(android.graphics.Rect(0, 0, yuvImage.width, yuvImage.height), 50, out)
+        val imageBytes = out.toByteArray()
+        return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
     }
     
     private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
