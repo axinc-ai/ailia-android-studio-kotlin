@@ -4,3 +4,6 @@
 [submodule "ailia-tokenizer-jni"]
 	path = ailia-tokenizer-jni
 	url = git@github.com:axinc-ai/ailia-tokenizer-jni.git
+[submodule "ailia-tflite-jni"]
+	path = ailia-tflite-jni
+	url = git@github.com:axinc-ai/ailia-tflite-jni.git
