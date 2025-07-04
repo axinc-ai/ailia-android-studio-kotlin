@@ -9,4 +9,7 @@
 	url = git@github.com:axinc-ai/ailia-tflite-jni.git
 [submodule "ailia-tracker"]
 	path = ailia-tracker
-	url = git@github.com:axinc-ai/ailia-tracker.git
+url=git@github.com:axinc-ai/ailia-tracker-jni.git
+[submodule "ailia-tracker-jni"]
+	path = ailia-tracker-jni
+	url = git@github.com:axinc-ai/ailia-tracker-jni.git
