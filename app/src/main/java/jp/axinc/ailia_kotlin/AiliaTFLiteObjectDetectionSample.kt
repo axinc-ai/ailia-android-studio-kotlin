@@ -185,7 +185,7 @@ class AiliaTFLiteObjectDetectionSample {
 
             postProcessYolox(inputShape!!, outputShape!!, outputData, outputType, quantScale, quantZeroPoint, canvas, paint, text, w, h)
 
-            (endTime - startTime) / 1000000
+            return (endTime - startTime) / 1000000
         } catch (e: Exception) {
             Log.e(TAG, "Failed to process object detection: ${e.javaClass.name}: ${e.message}")
             e.printStackTrace()
@@ -211,81 +211,6 @@ class AiliaTFLiteObjectDetectionSample {
             Log.i(TAG, "Object detection released")
         }
     }
-
-    fun detection(modelData: ByteArray?, bitmap: Bitmap, canvas: Canvas, paint: Paint, text: Paint, w: Int, h: Int, env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
-        if (modelData == null){
-            Log.e(TAG, "Failed to open model data")
-            return false;
-        }
-
-        val tflite = AiliaTFLite()
-        if (!tflite.open(modelData, env)) {
-            Log.e(TAG, "Failed to open TFLite model")
-            return false
-        }
-
-        if (!tflite.allocateTensors()) {
-            Log.e(TAG, "Failed to allocate tensors")
-            tflite.close()
-            return false
-        }
-
-        val inputTensorIndex = tflite.getInputTensorIndex(0)
-        val inputShape = tflite.getInputTensorShape(0) ?: run {
-            Log.e(TAG, "Failed to get input tensor shape")
-            tflite.close()
-            return false
-        }
-
-        val inputTensorType = tflite.getInputTensorType(0)
-        val inputBuffer = loadImage(inputTensorType, ByteArray(inputShape[1] * inputShape[2] * inputShape[3]), inputShape, bitmap)
-
-        if (!tflite.setTensorData(inputTensorIndex, inputBuffer)) {
-            Log.e(TAG, "Failed to set input tensor data")
-            tflite.close()
-            return false
-        }
-
-        val startTime = System.nanoTime()
-        if (!tflite.predict()) {
-            Log.e(TAG, "Predict failed")
-            tflite.close()
-            return false
-        }
-        val endTime = System.nanoTime()
-        Log.i(TAG, "Inference time: ${(endTime - startTime) / 1000000} ms")
-
-        val outputTensorIndex = tflite.getOutputTensorIndex(0)
-        val outputShape = tflite.getOutputTensorShape(0) ?: run {
-            Log.e(TAG, "Failed to get output tensor shape")
-            tflite.close()
-            return false
-        }
-
-        val outputType = tflite.getOutputTensorType(0)
-        val outputData = tflite.getTensorData(outputTensorIndex) ?: run {
-            Log.e(TAG, "Failed to get output tensor data")
-            tflite.close()
-            return false
-        }
-
-        val quantCount = tflite.getTensorQuantizationCount(outputTensorIndex)
-        if (quantCount != 1) {
-            Log.e(TAG, "Unexpected quantization count: $quantCount")
-            tflite.close()
-            return false
-        }
-
-        val quantScale = tflite.getTensorQuantizationScale(outputTensorIndex)?.get(0) ?: 1.0f
-        val quantZeroPoint = tflite.getTensorQuantizationZeroPoint(outputTensorIndex)?.get(0) ?: 0L
-
-        postProcessYolox(inputShape, outputShape, outputData, outputType, quantScale, quantZeroPoint, canvas, paint, text, w, h)
-
-        tflite.close()
-        return true
-    }
-
-
 
     data class RectF(var left: Float, var top: Float, var right: Float, var bottom: Float) {
         fun width() = right - left
