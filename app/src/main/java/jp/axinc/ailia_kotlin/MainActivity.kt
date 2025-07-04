@@ -394,11 +394,7 @@ class MainActivity : AppCompatActivity() {
                 isProcessing.set(false)
             }
         }
-    }if (totalTime > 0) 1000 / totalTime else 0
-                    processingTimeTextView.text = "Processing Time: ${totalTime}ms (Pose: ${poseTime}ms, Detection: ${detectionTime}ms) - FPS: $fps"
-                }
-                
-            } catch (e: Exception) {
+    }
                 Log.e("AILIA_Error", "Error processing camera frame: ${e.message}")
             }
         }
