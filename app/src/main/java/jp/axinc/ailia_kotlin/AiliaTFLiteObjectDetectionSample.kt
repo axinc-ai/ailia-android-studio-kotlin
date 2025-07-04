@@ -61,8 +61,8 @@ class AiliaTFLiteObjectDetectionSample {
     }
 
     fun initializeObjectDetection(modelData: ByteArray?, env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
-        if (modelData == null) {
-            Log.e(TAG, "Failed to open model data")
+        if (modelData == null || modelData.isEmpty()) {
+            Log.e(TAG, "Model data is null or empty")
             return false
         }
 
@@ -85,15 +85,39 @@ class AiliaTFLiteObjectDetectionSample {
             }
 
             inputTensorIndex = tflite!!.getInputTensorIndex(0)
+            if (inputTensorIndex < 0) {
+                Log.e(TAG, "Invalid input tensor index: $inputTensorIndex")
+                releaseObjectDetection()
+                return false
+            }
+
             inputShape = tflite!!.getInputTensorShape(0) ?: run {
                 Log.e(TAG, "Failed to get input tensor shape")
                 releaseObjectDetection()
                 return false
             }
 
+            if (inputShape!!.size != 4 || inputShape!!.any { it <= 0 }) {
+                Log.e(TAG, "Invalid input shape: ${inputShape!!.contentToString()}")
+                releaseObjectDetection()
+                return false
+            }
+
             outputTensorIndex = tflite!!.getOutputTensorIndex(0)
+            if (outputTensorIndex < 0) {
+                Log.e(TAG, "Invalid output tensor index: $outputTensorIndex")
+                releaseObjectDetection()
+                return false
+            }
+
             outputShape = tflite!!.getOutputTensorShape(0) ?: run {
                 Log.e(TAG, "Failed to get output tensor shape")
+                releaseObjectDetection()
+                return false
+            }
+
+            if (outputShape!!.isEmpty() || outputShape!!.any { it <= 0 }) {
+                Log.e(TAG, "Invalid output shape: ${outputShape!!.contentToString()}")
                 releaseObjectDetection()
                 return false
             }
@@ -111,24 +135,31 @@ class AiliaTFLiteObjectDetectionSample {
             quantZeroPoint = tflite!!.getTensorQuantizationZeroPoint(outputTensorIndex)?.get(0) ?: 0L
 
             isInitialized = true
-            Log.i(TAG, "Object detection initialized successfully")
+            Log.i(TAG, "Object detection initialized successfully - Input: ${inputShape!!.contentToString()}, Output: ${outputShape!!.contentToString()}")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize object detection: ${e.javaClass.name}: ${e.message}")
+            e.printStackTrace()
             releaseObjectDetection()
             false
         }
     }
 
     fun processObjectDetection(bitmap: Bitmap, canvas: Canvas, paint: Paint, text: Paint, w: Int, h: Int): Long {
-        if (!isInitialized || tflite == null || inputShape == null) {
-            Log.e(TAG, "Object detection not initialized")
+        if (!isInitialized || tflite == null || inputShape == null || outputShape == null) {
+            Log.e(TAG, "Object detection not initialized properly")
             return -1
         }
 
         return try {
             val inputTensorType = tflite!!.getInputTensorType(0)
-            val inputBuffer = loadImage(inputTensorType, ByteArray(inputShape!![1] * inputShape!![2] * inputShape!![3]), inputShape!!, bitmap)
+            val dummyBuffer = ByteArray(inputShape!![1] * inputShape!![2] * inputShape!![3])
+            val inputBuffer = loadImage(inputTensorType, dummyBuffer, inputShape!!, bitmap)
+
+            if (inputBuffer.isEmpty()) {
+                Log.e(TAG, "Failed to load image data")
+                return -1
+            }
 
             if (!tflite!!.setTensorData(inputTensorIndex, inputBuffer)) {
                 Log.e(TAG, "Failed to set input tensor data")
@@ -147,11 +178,17 @@ class AiliaTFLiteObjectDetectionSample {
                 return -1
             }
 
+            if (outputData.isEmpty()) {
+                Log.e(TAG, "Output data is empty")
+                return -1
+            }
+
             postProcessYolox(inputShape!!, outputShape!!, outputData, outputType, quantScale, quantZeroPoint, canvas, paint, text, w, h)
 
             (endTime - startTime) / 1000000
         } catch (e: Exception) {
             Log.e(TAG, "Failed to process object detection: ${e.javaClass.name}: ${e.message}")
+            e.printStackTrace()
             -1
         }
     }
