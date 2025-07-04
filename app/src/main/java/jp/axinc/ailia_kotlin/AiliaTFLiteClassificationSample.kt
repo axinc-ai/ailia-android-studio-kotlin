@@ -52,6 +52,146 @@ class AiliaTFLiteClassificationSample {
         }
     }
 
+    private var tflite: AiliaTFLite? = null
+    private var isInitialized = false
+    private var inputShape: IntArray? = null
+    private var inputTensorIndex: Int = -1
+    private var outputTensorIndex: Int = -1
+    private var outputShape: IntArray? = null
+    private var outputType: Int = -1
+    private var quantScale: Float = 1.0f
+    private var quantZeroPoint: Long = 0L
+
+    fun initializeClassification(modelData: ByteArray?, env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
+        if (modelData == null || modelData.isEmpty()) {
+            Log.e(TAG, "Model data is null or empty")
+            return false
+        }
+
+        if (isInitialized) {
+            releaseClassification()
+        }
+
+        return try {
+            tflite = AiliaTFLite()
+            if (!tflite!!.open(modelData, env)) {
+                Log.e(TAG, "Failed to open TFLite model")
+                releaseClassification()
+                return false
+            }
+
+            if (!tflite!!.allocateTensors()) {
+                Log.e(TAG, "Failed to allocate tensors")
+                releaseClassification()
+                return false
+            }
+
+            inputTensorIndex = tflite!!.getInputTensorIndex(0)
+            if (inputTensorIndex < 0) {
+                Log.e(TAG, "Invalid input tensor index: $inputTensorIndex")
+                releaseClassification()
+                return false
+            }
+
+            inputShape = tflite!!.getInputTensorShape(0) ?: run {
+                Log.e(TAG, "Failed to get input tensor shape")
+                releaseClassification()
+                return false
+            }
+
+            outputTensorIndex = tflite!!.getOutputTensorIndex(0)
+            if (outputTensorIndex < 0) {
+                Log.e(TAG, "Invalid output tensor index: $outputTensorIndex")
+                releaseClassification()
+                return false
+            }
+
+            outputShape = tflite!!.getOutputTensorShape(0) ?: run {
+                Log.e(TAG, "Failed to get output tensor shape")
+                releaseClassification()
+                return false
+            }
+
+            outputType = tflite!!.getOutputTensorType(0)
+
+            val quantCount = tflite!!.getTensorQuantizationCount(outputTensorIndex)
+            if (quantCount != 1) {
+                Log.e(TAG, "Unexpected quantization count: $quantCount")
+                releaseClassification()
+                return false
+            }
+
+            quantScale = tflite!!.getTensorQuantizationScale(outputTensorIndex)?.get(0) ?: 1.0f
+            quantZeroPoint = tflite!!.getTensorQuantizationZeroPoint(outputTensorIndex)?.get(0) ?: 0L
+
+            isInitialized = true
+            Log.i(TAG, "Classification initialized successfully")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize classification: ${e.javaClass.name}: ${e.message}")
+            releaseClassification()
+            false
+        }
+    }
+
+    fun processClassification(bitmap: Bitmap): Long {
+        if (!isInitialized || tflite == null || inputShape == null || outputShape == null) {
+            Log.e(TAG, "Classification not initialized properly")
+            return -1
+        }
+
+        return try {
+            val inputTensorType = tflite!!.getInputTensorType(0)
+            val inputQuantScale = tflite!!.getTensorQuantizationScale(inputTensorIndex)?.get(0) ?: 1.0f
+            val inputQuantZeroPoint = tflite!!.getTensorQuantizationZeroPoint(inputTensorIndex)?.get(0) ?: 0L
+            
+            val inputBuffer = loadImage(inputTensorType, ByteArray(inputShape!![1] * inputShape!![2] * inputShape!![3]), inputShape!!, bitmap, inputQuantScale, inputQuantZeroPoint)
+
+            if (!tflite!!.setTensorData(inputTensorIndex, inputBuffer)) {
+                Log.e(TAG, "Failed to set input tensor data")
+                return -1
+            }
+
+            val startTime = System.nanoTime()
+            if (!tflite!!.predict()) {
+                Log.e(TAG, "Predict failed")
+                return -1
+            }
+            val endTime = System.nanoTime()
+
+            val outputData = tflite!!.getTensorData(outputTensorIndex) ?: run {
+                Log.e(TAG, "Failed to get output tensor data")
+                return -1
+            }
+
+            postProcess(inputShape!!, outputShape!!, outputData, outputType, quantScale, quantZeroPoint)
+
+            (endTime - startTime) / 1000000
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to process classification: ${e.javaClass.name}: ${e.message}")
+            -1
+        }
+    }
+
+    fun releaseClassification() {
+        try {
+            tflite?.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing classification: ${e.javaClass.name}: ${e.message}")
+        } finally {
+            tflite = null
+            isInitialized = false
+            inputShape = null
+            inputTensorIndex = -1
+            outputTensorIndex = -1
+            outputShape = null
+            outputType = -1
+            quantScale = 1.0f
+            quantZeroPoint = 0L
+            Log.i(TAG, "Classification released")
+        }
+    }
+
     fun classification(modelData: ByteArray?, bitmap: Bitmap, env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
         if (modelData == null){
             Log.e(TAG, "Failed to open model data")

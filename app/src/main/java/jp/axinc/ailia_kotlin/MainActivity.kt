@@ -11,10 +11,7 @@ import android.graphics.Paint
 import android.os.Bundle
 import android.util.Log
 import android.view.View
-import android.widget.ImageView
-import android.widget.RadioGroup
-import android.widget.TextView
-import android.widget.Toast
+import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -27,21 +24,37 @@ import java.io.*
 import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : AppCompatActivity() {
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var imageView: ImageView
     private lateinit var cameraPreviewView: PreviewView
     private lateinit var modeRadioGroup: RadioGroup
+    private lateinit var algorithmSpinner: Spinner
     private lateinit var processingTimeTextView: TextView
     
     private var poseEstimatorSample = AiliaPoseEstimatorSample()
     private var objectDetectionSample = AiliaTFLiteObjectDetectionSample()
+    private var classificationSample = AiliaTFLiteClassificationSample()
+    private var tokenizerSample = AiliaTokenizerSample()
+    private var trackerSample = AiliaTrackerSample()
+    
     private var selectedEnv: AiliaEnvironment? = null
     private var isInitialized = false
+    private var currentAlgorithm = AlgorithmType.POSE_ESTIMATION
+    private var isProcessing = AtomicBoolean(false)
     
     private var imageAnalyzer: ImageAnalysis? = null
     private var camera: Camera? = null
+
+    enum class AlgorithmType {
+        POSE_ESTIMATION,
+        OBJECT_DETECTION,
+        TRACKING,
+        TOKENIZE,
+        CLASSIFICATION
+    }
     
     companion object {
         private const val REQUEST_CODE_PERMISSIONS = 10
@@ -72,10 +85,34 @@ class MainActivity : AppCompatActivity() {
         imageView = findViewById(R.id.imageView)
         cameraPreviewView = findViewById(R.id.cameraPreviewView)
         modeRadioGroup = findViewById(R.id.modeRadioGroup)
+        algorithmSpinner = findViewById(R.id.algorithmSpinner)
         processingTimeTextView = findViewById(R.id.processingTimeTextView)
     }
     
     private fun setupModeSelection() {
+        val algorithms = arrayOf(
+            "PoseEstimation",
+            "ObjectDetection", 
+            "Tracking",
+            "Tokenize",
+            "Classification"
+        )
+        
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, algorithms)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        algorithmSpinner.adapter = adapter
+        
+        algorithmSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val newAlgorithm = AlgorithmType.values()[position]
+                if (newAlgorithm != currentAlgorithm) {
+                    switchAlgorithm(newAlgorithm)
+                }
+            }
+            
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+        
         modeRadioGroup.setOnCheckedChangeListener { _, checkedId ->
             when (checkedId) {
                 R.id.imageRadioButton -> {
@@ -90,7 +127,39 @@ class MainActivity : AppCompatActivity() {
         switchToImageMode()
     }
     
+    private fun switchAlgorithm(newAlgorithm: AlgorithmType) {
+        if (isProcessing.get()) {
+            Log.w("AILIA_Main", "Cannot switch algorithm while processing")
+            return
+        }
+        
+        releaseCurrentAlgorithm()
+        currentAlgorithm = newAlgorithm
+        isInitialized = false
+        
+        if (modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton) {
+            processImageMode()
+        }
+    }
+    
+    private fun releaseCurrentAlgorithm() {
+        try {
+            poseEstimatorSample.releasePoseEstimator()
+            objectDetectionSample.releaseObjectDetection()
+            classificationSample.releaseClassification()
+            tokenizerSample.releaseTokenizer()
+            trackerSample.releaseTracker()
+        } catch (e: Exception) {
+            Log.e("AILIA_Error", "Error releasing algorithms: ${e.message}")
+        }
+    }
+    
     private fun switchToImageMode() {
+        if (isProcessing.get()) {
+            Log.w("AILIA_Main", "Cannot switch mode while processing")
+            return
+        }
+        
         imageView.visibility = View.VISIBLE
         cameraPreviewView.visibility = View.GONE
         stopCamera()
@@ -98,6 +167,11 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun switchToCameraMode() {
+        if (isProcessing.get()) {
+            Log.w("AILIA_Main", "Cannot switch mode while processing")
+            return
+        }
+        
         if (allPermissionsGranted()) {
             imageView.visibility = View.GONE
             cameraPreviewView.visibility = View.VISIBLE
@@ -112,28 +186,57 @@ class MainActivity : AppCompatActivity() {
         try {
             selectedEnv = poseEstimatorSample.ailia_environment(cacheDir.absolutePath)
             
-            val proto: ByteArray? = loadRawFile(R.raw.lightweight_human_pose_proto)
-            val model: ByteArray? = loadRawFile(R.raw.lightweight_human_pose_weight)
-            val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_tiny)
+            when (currentAlgorithm) {
+                AlgorithmType.POSE_ESTIMATION -> {
+                    val proto: ByteArray? = loadRawFile(R.raw.lightweight_human_pose_proto)
+                    val model: ByteArray? = loadRawFile(R.raw.lightweight_human_pose_weight)
+                    isInitialized = poseEstimatorSample.initializePoseEstimator(selectedEnv!!.id, proto, model)
+                }
+                AlgorithmType.OBJECT_DETECTION -> {
+                    val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_tiny)
+                    isInitialized = objectDetectionSample.initializeObjectDetection(yoloxModel)
+                }
+                AlgorithmType.CLASSIFICATION -> {
+                    val classificationModel: ByteArray? = loadRawFile(R.raw.mobilenetv2)
+                    isInitialized = classificationSample.initializeClassification(classificationModel)
+                }
+                AlgorithmType.TOKENIZE -> {
+                    isInitialized = tokenizerSample.initializeTokenizer()
+                }
+                AlgorithmType.TRACKING -> {
+                    isInitialized = trackerSample.initializeTracker()
+                }
+            }
             
-            if (poseEstimatorSample.initializePoseEstimator(selectedEnv!!.id, proto, model) &&
-                objectDetectionSample.initializeObjectDetection(yoloxModel)) {
-                isInitialized = true
-                Log.i("AILIA_Main", "Ailia initialized successfully")
+            if (isInitialized) {
+                Log.i("AILIA_Main", "Algorithm ${currentAlgorithm.name} initialized successfully")
             } else {
-                Log.e("AILIA_Error", "Failed to initialize Ailia")
+                Log.e("AILIA_Error", "Failed to initialize algorithm ${currentAlgorithm.name}")
             }
         } catch (e: Exception) {
-            Log.e("AILIA_Error", "Error initializing Ailia: ${e.message}")
+            Log.e("AILIA_Error", "Error initializing algorithm ${currentAlgorithm.name}: ${e.message}")
         }
     }
     
     private fun processImageMode() {
-        if (!isInitialized) {
-            initializeAilia()
+        if (isProcessing.get()) {
+            return
         }
         
+        isProcessing.set(true)
+        
         try {
+            if (!isInitialized) {
+                initializeAilia()
+            }
+            
+            if (!isInitialized) {
+                runOnUiThread {
+                    processingTimeTextView.text = "Failed to initialize ${currentAlgorithm.name}"
+                }
+                return
+            }
+            
             val options = Options()
             options.inScaled = false
             val personBmp = BitmapFactory.decodeResource(this.resources, R.raw.person, options)
@@ -162,16 +265,27 @@ class MainActivity : AppCompatActivity() {
                 isAntiAlias = true
             }
             
-            val startTime = System.nanoTime()
-            
-            val poseTime = poseEstimatorSample.processPoseEstimation(img, canvas, paint, w, h)
-            val detectionTime = objectDetectionSample.processObjectDetection(personBmp, canvas, paint2, textPaint, w, h)
-            
-            val totalTime = (System.nanoTime() - startTime) / 1000000
+            val processingTime = when (currentAlgorithm) {
+                AlgorithmType.POSE_ESTIMATION -> {
+                    poseEstimatorSample.processPoseEstimation(img, canvas, paint, w, h)
+                }
+                AlgorithmType.OBJECT_DETECTION -> {
+                    objectDetectionSample.processObjectDetection(personBmp, canvas, paint2, textPaint, w, h)
+                }
+                AlgorithmType.CLASSIFICATION -> {
+                    classificationSample.processClassification(personBmp)
+                }
+                AlgorithmType.TOKENIZE -> {
+                    tokenizerSample.processTokenization("Hello world from ailia!")
+                }
+                AlgorithmType.TRACKING -> {
+                    trackerSample.processTracking(canvas, paint2, w, h)
+                }
+            }
             
             runOnUiThread {
                 imageView.setImageBitmap(bitmap)
-                processingTimeTextView.text = "Processing Time: ${totalTime}ms (Pose: ${poseTime}ms, Detection: ${detectionTime}ms)"
+                processingTimeTextView.text = "Processing Time: ${processingTime}ms (${currentAlgorithm.name})"
             }
             
         } catch (e: Exception) {
@@ -179,6 +293,8 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 processingTimeTextView.text = "Processing Error: ${e.message}"
             }
+        } finally {
+            isProcessing.set(false)
         }
     }
     
@@ -214,11 +330,17 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun stopCamera() {
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-        cameraProviderFuture.addListener({
-            val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
-            cameraProvider.unbindAll()
-        }, ContextCompat.getMainExecutor(this))
+        try {
+            val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+            cameraProviderFuture.addListener({
+                val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
+                cameraProvider.unbindAll()
+                camera = null
+                imageAnalyzer = null
+            }, ContextCompat.getMainExecutor(this))
+        } catch (e: Exception) {
+            Log.e("AILIA_Error", "Error stopping camera: ${e.message}")
+        }
     }
     
     private inner class CameraFrameAnalyzer : ImageAnalysis.Analyzer {
@@ -262,7 +384,17 @@ class MainActivity : AppCompatActivity() {
                 val totalTime = (System.nanoTime() - startTime) / 1000000
                 
                 runOnUiThread {
-                    val fps = if (totalTime > 0) 1000 / totalTime else 0
+                    val fps = if (processingTime > 0) 1000 / processingTime else 0
+                    processingTimeTextView.text = "Processing Time: ${processingTime}ms (${currentAlgorithm.name}) - FPS: $fps"
+                }
+                
+            } catch (e: Exception) {
+                Log.e("AILIA_Error", "Error processing camera frame: ${e.message}")
+            } finally {
+                isProcessing.set(false)
+            }
+        }
+    }if (totalTime > 0) 1000 / totalTime else 0
                     processingTimeTextView.text = "Processing Time: ${totalTime}ms (Pose: ${poseTime}ms, Detection: ${detectionTime}ms) - FPS: $fps"
                 }
                 
@@ -315,8 +447,7 @@ class MainActivity : AppCompatActivity() {
     
     override fun onDestroy() {
         super.onDestroy()
-        poseEstimatorSample.releasePoseEstimator()
-        objectDetectionSample.releaseObjectDetection()
+        releaseCurrentAlgorithm()
         cameraExecutor.shutdown()
     }
     
