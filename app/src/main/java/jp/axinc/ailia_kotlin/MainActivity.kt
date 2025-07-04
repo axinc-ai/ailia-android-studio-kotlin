@@ -395,10 +395,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-                Log.e("AILIA_Error", "Error processing camera frame: ${e.message}")
-            }
-        }
-    }
     
     private fun imageProxyToBitmap(image: ImageProxy): Bitmap {
         val yBuffer = image.planes[0].buffer // Y
