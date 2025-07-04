@@ -40,6 +40,10 @@ Output
 
 Estimate bounding box of object.
 
+### ailia Tracker
+
+Tracking object using ByteTrack.
+
 ### ailia Tokenizer
 
 #### TBD
