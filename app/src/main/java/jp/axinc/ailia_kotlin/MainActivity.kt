@@ -137,12 +137,12 @@ class MainActivity : AppCompatActivity() {
             // TFLite Classification
             var mobilenet_model: ByteArray? = loadRawFile(R.raw.mobilenetv2)
             var tflite_classification_sample = AiliaTFLiteClassificationSample()
-            tflite_classification_sample.classification(mobilenet_model, clock_bmp)
+            tflite_classification_sample.classification(mobilenet_model, clock_bmp, env = AiliaTFLite.AILIA_TFLITE_ENV_NNAPI)
 
             // TFLite Object Detection
             var yolox_model: ByteArray? = loadRawFile(R.raw.yolox_tiny)
             var tflite_detection_sample = AiliaTFLiteObjectDetectionSample()
-            tflite_detection_sample.detection(yolox_model, person_bmp, canvas, paint2, text, w, h)
+            tflite_detection_sample.detection(yolox_model, person_bmp, canvas, paint2, text, w, h, env = AiliaTFLite.AILIA_TFLITE_ENV_NNAPI)
         } catch (e: Exception) {
             Log.i("AILIA_Error", e.javaClass.name + ": " + e.message)
         }
