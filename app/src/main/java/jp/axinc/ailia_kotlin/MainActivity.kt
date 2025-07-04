@@ -222,16 +222,9 @@ class MainActivity : AppCompatActivity() {
     }
     
     private inner class CameraFrameAnalyzer : ImageAnalysis.Analyzer {
-        private var lastAnalyzedTimestamp = 0L
-        private val frameRateLimit = 100L
-        
         override fun analyze(image: ImageProxy) {
-            val currentTimestamp = System.currentTimeMillis()
-            if (currentTimestamp - lastAnalyzedTimestamp >= frameRateLimit) {
-                if (isInitialized) {
-                    processCameraFrame(image)
-                }
-                lastAnalyzedTimestamp = currentTimestamp
+            if (isInitialized) {
+                processCameraFrame(image)
             }
             image.close()
         }
@@ -269,7 +262,8 @@ class MainActivity : AppCompatActivity() {
                 val totalTime = (System.nanoTime() - startTime) / 1000000
                 
                 runOnUiThread {
-                    processingTimeTextView.text = "Processing Time: ${totalTime}ms (Pose: ${poseTime}ms, Detection: ${detectionTime}ms) - FPS: ${1000/totalTime.coerceAtLeast(1)}"
+                    val fps = if (totalTime > 0) 1000 / totalTime else 0
+                    processingTimeTextView.text = "Processing Time: ${totalTime}ms (Pose: ${poseTime}ms, Detection: ${detectionTime}ms) - FPS: $fps"
                 }
                 
             } catch (e: Exception) {
