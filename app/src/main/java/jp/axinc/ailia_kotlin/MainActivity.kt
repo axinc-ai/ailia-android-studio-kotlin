@@ -347,18 +347,18 @@ class MainActivity : AppCompatActivity() {
                 }
                 AlgorithmType.OBJECT_DETECTION -> {
                     val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_tiny)
-                    isInitialized = objectDetectionSample.initializeObjectDetection(yoloxModel)
+                    isInitialized = objectDetectionSample.initializeObjectDetection(yoloxModel, env = AiliaTFLite.AILIA_TFLITE_ENV_NNAPI)
                 }
                 AlgorithmType.CLASSIFICATION -> {
                     val classificationModel: ByteArray? = loadRawFile(R.raw.mobilenetv2)
-                    isInitialized = classificationSample.initializeClassification(classificationModel)
+                    isInitialized = classificationSample.initializeClassification(classificationModel, env = AiliaTFLite.AILIA_TFLITE_ENV_NNAPI)
                 }
                 AlgorithmType.TOKENIZE -> {
                     isInitialized = tokenizerSample.initializeTokenizer()
                 }
                 AlgorithmType.TRACKING -> {
                     val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_tiny)
-                    if (objectDetectionSample.initializeObjectDetection(yoloxModel)) {
+                    if (objectDetectionSample.initializeObjectDetection(yoloxModel, env = AiliaTFLite.AILIA_TFLITE_ENV_NNAPI)) {
                         isInitialized = trackerSample.initializeTracker()
                     }
                 }
