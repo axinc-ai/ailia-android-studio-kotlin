@@ -138,6 +138,62 @@ class MainActivity : AppCompatActivity() {
         switchToImageMode()
     }
     
+    private fun processAlgorithm(img: ByteArray, bitmap: Bitmap, canvas: Canvas, w: Int, h: Int): Long {
+        val paint = Paint().apply {
+            color = Color.WHITE
+        }
+        
+        val paint2 = Paint().apply {
+            style = Paint.Style.STROKE
+            color = Color.RED
+            strokeWidth = 3f
+        }
+        
+        val textPaint = Paint().apply {
+            color = Color.BLACK
+            textSize = 30f
+            isAntiAlias = true
+        }
+        
+        return when (currentAlgorithm) {
+            AlgorithmType.POSE_ESTIMATION -> {
+                poseEstimatorSample.processPoseEstimation(img, canvas, paint, w, h)
+            }
+            AlgorithmType.OBJECT_DETECTION -> {
+                objectDetectionSample.processObjectDetection(bitmap, canvas, paint2, textPaint, w, h)
+            }
+            AlgorithmType.CLASSIFICATION -> {
+                val time = classificationSample.processClassification(bitmap)
+                val result = classificationSample.getLastClassificationResult()
+                runOnUiThread {
+                    classificationResultTextView.text = "Classification Result: $result"
+                }
+                time
+            }
+            AlgorithmType.TOKENIZE -> {
+                val inputText = tokenizerInputEditText.text.toString().ifEmpty { "Hello world from ailia!" }
+                val time = tokenizerSample.processTokenization(inputText)
+                val tokens = tokenizerSample.getLastTokenizationResult()
+                runOnUiThread {
+                    tokenizerOutputTextView.text = "Tokens: $tokens"
+                }
+                time
+            }
+            AlgorithmType.TRACKING -> {
+                // First run object detection to get detection results without drawing
+                val detectionTime = objectDetectionSample.processObjectDetectionWithoutDrawing(bitmap, w, h)
+                val detectionResults = objectDetectionSample.getDetectionResults(bitmap)
+                // Then run tracking with the detection results and draw the tracking results
+                val trackingTime = trackerSample.processTrackingWithDetections(canvas, paint2, w, h, detectionResults)
+                val trackingInfo = trackerSample.getLastTrackingResult()
+                runOnUiThread {
+                    trackingResultTextView.text = "Tracking Results: $trackingInfo"
+                }
+                detectionTime + trackingTime
+            }
+        }
+    }
+    
     private fun updateUIVisibility() {
         val isImageMode = modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton
         val isCameraMode = modeRadioGroup.checkedRadioButtonId == R.id.cameraRadioButton
@@ -342,40 +398,7 @@ class MainActivity : AppCompatActivity() {
                 isAntiAlias = true
             }
             
-            val processingTime = when (currentAlgorithm) {
-                AlgorithmType.POSE_ESTIMATION -> {
-                    poseEstimatorSample.processPoseEstimation(img, canvas, paint, w, h)
-                }
-                AlgorithmType.OBJECT_DETECTION -> {
-                    objectDetectionSample.processObjectDetection(personBmp, canvas, paint2, textPaint, w, h)
-                }
-                AlgorithmType.CLASSIFICATION -> {
-                    val time = classificationSample.processClassification(personBmp)
-                    val result = classificationSample.getLastClassificationResult()
-                    runOnUiThread {
-                        classificationResultTextView.text = "Classification Result: $result"
-                    }
-                    time
-                }
-                AlgorithmType.TOKENIZE -> {
-                    val inputText = tokenizerInputEditText.text.toString().ifEmpty { "Hello world from ailia!" }
-                    val time = tokenizerSample.processTokenization(inputText)
-                    val tokens = tokenizerSample.getLastTokenizationResult()
-                    runOnUiThread {
-                        tokenizerOutputTextView.text = "Tokens: $tokens"
-                    }
-                    time
-                }
-                AlgorithmType.TRACKING -> {
-                    val detectionResults = objectDetectionSample.getDetectionResults(personBmp)
-                    val time = trackerSample.processTrackingWithDetections(canvas, paint2, w, h, detectionResults)
-                    val trackingInfo = trackerSample.getLastTrackingResult()
-                    runOnUiThread {
-                        trackingResultTextView.text = "Tracking Results: $trackingInfo"
-                    }
-                    time
-                }
-            }
+            val processingTime = processAlgorithm(img, personBmp, canvas, w, h)
             
             runOnUiThread {
                 if (currentAlgorithm != AlgorithmType.TOKENIZE) {
@@ -464,58 +487,7 @@ class MainActivity : AppCompatActivity() {
                 val canvas = Canvas(resultBitmap)
                 canvas.drawBitmap(bitmap, 0f, 0f, null)
                 
-                val paint = Paint().apply {
-                    color = Color.WHITE
-                }
-                
-                val paint2 = Paint().apply {
-                    style = Paint.Style.STROKE
-                    color = Color.RED
-                    strokeWidth = 3f
-                }
-                
-                val textPaint = Paint().apply {
-                    color = Color.BLACK
-                    textSize = 30f
-                    isAntiAlias = true
-                }
-                
-                val startTime = System.nanoTime()
-                val processingTime = when (currentAlgorithm) {
-                    AlgorithmType.POSE_ESTIMATION -> {
-                        poseEstimatorSample.processPoseEstimation(img, canvas, paint, w, h)
-                    }
-                    AlgorithmType.OBJECT_DETECTION -> {
-                        objectDetectionSample.processObjectDetection(bitmap, canvas, paint2, textPaint, w, h)
-                    }
-                    AlgorithmType.CLASSIFICATION -> {
-                        val time = classificationSample.processClassification(bitmap)
-                        val result = classificationSample.getLastClassificationResult()
-                        runOnUiThread {
-                            classificationResultTextView.text = "Classification Result: $result"
-                        }
-                        time
-                    }
-                    AlgorithmType.TOKENIZE -> {
-                        val inputText = tokenizerInputEditText.text.toString().ifEmpty { "Hello world from ailia!" }
-                        val time = tokenizerSample.processTokenization(inputText)
-                        val tokens = tokenizerSample.getLastTokenizationResult()
-                        runOnUiThread {
-                            tokenizerOutputTextView.text = "Tokens: $tokens"
-                        }
-                        time
-                    }
-                    AlgorithmType.TRACKING -> {
-                        val detectionResults = objectDetectionSample.getDetectionResults(bitmap)
-                        val time = trackerSample.processTrackingWithDetections(canvas, paint2, w, h, detectionResults)
-                        val trackingInfo = trackerSample.getLastTrackingResult()
-                        runOnUiThread {
-                            trackingResultTextView.text = "Tracking Results: $trackingInfo"
-                        }
-                        time
-                    }
-                }
-                val totalTime = (System.nanoTime() - startTime) / 1000000
+                val processingTime = processAlgorithm(img, bitmap, canvas, w, h)
                 
                 runOnUiThread {
                     val fps = if (processingTime > 0) 1000 / processingTime else 0

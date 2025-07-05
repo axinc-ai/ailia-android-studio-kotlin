@@ -146,6 +146,60 @@ class AiliaTFLiteObjectDetectionSample {
         }
     }
 
+    fun processObjectDetectionWithoutDrawing(bitmap: Bitmap, w: Int, h: Int): Long {
+        if (!isInitialized || tflite == null || inputShape == null || outputShape == null) {
+            Log.e(TAG, "Object detection not initialized properly")
+            return -1
+        }
+
+        return try {
+            val inputTensorType = tflite!!.getInputTensorType(0)
+            val dummyBuffer = ByteArray(inputShape!![1] * inputShape!![2] * inputShape!![3])
+            val inputBuffer = loadImage(inputTensorType, dummyBuffer, inputShape!!, bitmap)
+
+            if (inputBuffer.isEmpty()) {
+                Log.e(TAG, "Failed to load image data")
+                return -1
+            }
+
+            if (!tflite!!.setTensorData(inputTensorIndex, inputBuffer)) {
+                Log.e(TAG, "Failed to set input tensor data")
+                return -1
+            }
+
+            val startTime = System.nanoTime()
+            if (!tflite!!.predict()) {
+                Log.e(TAG, "Predict failed")
+                return -1
+            }
+            val endTime = System.nanoTime()
+
+            val outputData = tflite!!.getTensorData(outputTensorIndex) ?: run {
+                Log.e(TAG, "Failed to get output tensor data")
+                return -1
+            }
+
+            if (outputData.isEmpty()) {
+                Log.e(TAG, "Output data is empty")
+                return -1
+            }
+
+            // Create dummy canvas for processing without drawing
+            val dummyBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val dummyCanvas = Canvas(dummyBitmap)
+            val dummyPaint = Paint()
+            val dummyTextPaint = Paint()
+
+            lastDetectionResults = postProcessYolox(inputShape!!, outputShape!!, outputData, outputType, quantScale, quantZeroPoint, dummyCanvas, dummyPaint, dummyTextPaint, w, h)
+
+            return (endTime - startTime) / 1000000
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to process object detection: ${e.javaClass.name}: ${e.message}")
+            e.printStackTrace()
+            -1
+        }
+    }
+
     fun processObjectDetection(bitmap: Bitmap, canvas: Canvas, paint: Paint, text: Paint, w: Int, h: Int): Long {
         if (!isInitialized || tflite == null || inputShape == null || outputShape == null) {
             Log.e(TAG, "Object detection not initialized properly")
@@ -322,42 +376,8 @@ class AiliaTFLiteObjectDetectionSample {
     }
     
     fun getDetectionResults(bitmap: Bitmap): List<AiliaTrackerSample.DetectionResult> {
-        if (!isInitialized || tflite == null || inputShape == null || outputShape == null) {
-            Log.e(TAG, "Object detection not initialized properly")
-            return emptyList()
-        }
-
-        return try {
-            val inputTensorType = tflite!!.getInputTensorType(0)
-            val dummyBuffer = ByteArray(inputShape!![1] * inputShape!![2] * inputShape!![3])
-            val inputBuffer = loadImage(inputTensorType, dummyBuffer, inputShape!!, bitmap)
-
-            if (!tflite!!.setTensorData(inputTensorIndex, inputBuffer)) {
-                Log.e(TAG, "Failed to set input tensor data")
-                return emptyList()
-            }
-
-            if (!tflite!!.predict()) {
-                Log.e(TAG, "Predict failed")
-                return emptyList()
-            }
-
-            val outputData = tflite!!.getTensorData(outputTensorIndex) ?: run {
-                Log.e(TAG, "Failed to get output tensor data")
-                return emptyList()
-            }
-
-            val w = bitmap.width
-            val h = bitmap.height
-            val dummyCanvas = Canvas()
-            val dummyPaint = Paint()
-            val dummyTextPaint = Paint()
-
-            postProcessYolox(inputShape!!, outputShape!!, outputData, outputType, quantScale, quantZeroPoint, dummyCanvas, dummyPaint, dummyTextPaint, w, h)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to get detection results: ${e.javaClass.name}: ${e.message}")
-            emptyList()
-        }
+        // Return cached results from the last processObjectDetectionWithoutDrawing call
+        return lastDetectionResults
     }
 
     private fun applyNMS(boxes: List<RectF>, scores: List<Float>, scoreThreshold: Float, iouThreshold: Float): List<Int> {
