@@ -49,6 +49,7 @@ class MainActivity : AppCompatActivity() {
     private var isInitialized = false
     private var currentAlgorithm = AlgorithmType.POSE_ESTIMATION
     private var pendingAlgorithmSwitch: AlgorithmType? = null
+    private var pendingModeSwitch: Int? = null
     private var isProcessing = AtomicBoolean(false)
     
     private var imageAnalyzer: ImageAnalysis? = null
@@ -297,27 +298,40 @@ class MainActivity : AppCompatActivity() {
     
     private fun switchToImageMode() {
         if (isProcessing.get()) {
-            Log.w("AILIA_Main", "Cannot switch mode while processing")
+            Log.i("AILIA_Main", "Processing active, queuing mode switch to Image")
+            pendingModeSwitch = R.id.imageRadioButton
             return
         }
         
-        updateUIVisibility()
-        stopCamera()
-        processImageMode()
+        executeModeSwitch(R.id.imageRadioButton)
     }
     
     private fun switchToCameraMode() {
         if (isProcessing.get()) {
-            Log.w("AILIA_Main", "Cannot switch mode while processing")
+            Log.i("AILIA_Main", "Processing active, queuing mode switch to Camera")
+            pendingModeSwitch = R.id.cameraRadioButton
             return
         }
         
-        if (allPermissionsGranted()) {
-            updateUIVisibility()
-            startCamera()
-        } else {
-            Toast.makeText(this, "Camera permission required", Toast.LENGTH_SHORT).show()
-            modeRadioGroup.check(R.id.imageRadioButton)
+        executeModeSwitch(R.id.cameraRadioButton)
+    }
+    
+    private fun executeModeSwitch(modeId: Int) {
+        when (modeId) {
+            R.id.imageRadioButton -> {
+                updateUIVisibility()
+                stopCamera()
+                processImageMode()
+            }
+            R.id.cameraRadioButton -> {
+                if (allPermissionsGranted()) {
+                    updateUIVisibility()
+                    startCamera()
+                } else {
+                    Toast.makeText(this, "Camera permission required", Toast.LENGTH_SHORT).show()
+                    modeRadioGroup.check(R.id.imageRadioButton)
+                }
+            }
         }
     }
     
@@ -425,6 +439,11 @@ class MainActivity : AppCompatActivity() {
                 pendingAlgorithmSwitch = null
                 executeAlgorithmSwitch(pendingAlgorithm)
             }
+            
+            pendingModeSwitch?.let { pendingMode ->
+                pendingModeSwitch = null
+                executeModeSwitch(pendingMode)
+            }
         }
     }
     
@@ -514,6 +533,13 @@ class MainActivity : AppCompatActivity() {
                     pendingAlgorithmSwitch = null
                     runOnUiThread {
                         executeAlgorithmSwitch(pendingAlgorithm)
+                    }
+                }
+                
+                pendingModeSwitch?.let { pendingMode ->
+                    pendingModeSwitch = null
+                    runOnUiThread {
+                        executeModeSwitch(pendingMode)
                     }
                 }
             }
