@@ -33,6 +33,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var modeRadioGroup: RadioGroup
     private lateinit var algorithmSpinner: Spinner
     private lateinit var processingTimeTextView: TextView
+    private lateinit var resultScrollView: ScrollView
+    private lateinit var classificationResultTextView: TextView
+    private lateinit var tokenizerInputEditText: EditText
+    private lateinit var tokenizerOutputTextView: TextView
+    private lateinit var trackingResultTextView: TextView
     
     private var poseEstimatorSample = AiliaPoseEstimatorSample()
     private var objectDetectionSample = AiliaTFLiteObjectDetectionSample()
@@ -71,6 +76,7 @@ class MainActivity : AppCompatActivity() {
         
         initializeViews()
         setupModeSelection()
+        updateUIVisibility()
         
         if (allPermissionsGranted()) {
             initializeAilia()
@@ -87,6 +93,11 @@ class MainActivity : AppCompatActivity() {
         modeRadioGroup = findViewById(R.id.modeRadioGroup)
         algorithmSpinner = findViewById(R.id.algorithmSpinner)
         processingTimeTextView = findViewById(R.id.processingTimeTextView)
+        resultScrollView = findViewById(R.id.resultScrollView)
+        classificationResultTextView = findViewById(R.id.classificationResultTextView)
+        tokenizerInputEditText = findViewById(R.id.tokenizerInputEditText)
+        tokenizerOutputTextView = findViewById(R.id.tokenizerOutputTextView)
+        trackingResultTextView = findViewById(R.id.trackingResultTextView)
     }
     
     private fun setupModeSelection() {
@@ -127,6 +138,73 @@ class MainActivity : AppCompatActivity() {
         switchToImageMode()
     }
     
+    private fun updateUIVisibility() {
+        val isImageMode = modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton
+        val isCameraMode = modeRadioGroup.checkedRadioButtonId == R.id.cameraRadioButton
+        
+        when (currentAlgorithm) {
+            AlgorithmType.TOKENIZE -> {
+                imageView.visibility = View.GONE
+                cameraPreviewView.visibility = View.GONE
+                resultScrollView.visibility = View.VISIBLE
+                classificationResultTextView.visibility = View.GONE
+                tokenizerInputEditText.visibility = View.VISIBLE
+                tokenizerOutputTextView.visibility = View.VISIBLE
+                trackingResultTextView.visibility = View.GONE
+                findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.VISIBLE
+                findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.VISIBLE
+            }
+            AlgorithmType.CLASSIFICATION -> {
+                if (isImageMode) {
+                    imageView.visibility = View.VISIBLE
+                    cameraPreviewView.visibility = View.GONE
+                } else {
+                    imageView.visibility = View.GONE
+                    cameraPreviewView.visibility = View.VISIBLE
+                }
+                resultScrollView.visibility = View.VISIBLE
+                classificationResultTextView.visibility = View.VISIBLE
+                tokenizerInputEditText.visibility = View.GONE
+                tokenizerOutputTextView.visibility = View.GONE
+                trackingResultTextView.visibility = View.GONE
+                findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
+                findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
+            }
+            AlgorithmType.TRACKING -> {
+                if (isImageMode) {
+                    imageView.visibility = View.VISIBLE
+                    cameraPreviewView.visibility = View.GONE
+                } else {
+                    imageView.visibility = View.GONE
+                    cameraPreviewView.visibility = View.VISIBLE
+                }
+                resultScrollView.visibility = View.VISIBLE
+                classificationResultTextView.visibility = View.GONE
+                tokenizerInputEditText.visibility = View.GONE
+                tokenizerOutputTextView.visibility = View.GONE
+                trackingResultTextView.visibility = View.VISIBLE
+                findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
+                findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
+            }
+            else -> {
+                if (isImageMode) {
+                    imageView.visibility = View.VISIBLE
+                    cameraPreviewView.visibility = View.GONE
+                } else {
+                    imageView.visibility = View.GONE
+                    cameraPreviewView.visibility = View.VISIBLE
+                }
+                resultScrollView.visibility = View.GONE
+                classificationResultTextView.visibility = View.GONE
+                tokenizerInputEditText.visibility = View.GONE
+                tokenizerOutputTextView.visibility = View.GONE
+                trackingResultTextView.visibility = View.GONE
+                findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
+                findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
+            }
+        }
+    }
+    
     private fun switchAlgorithm(newAlgorithm: AlgorithmType) {
         if (isProcessing.get()) {
             Log.w("AILIA_Main", "Cannot switch algorithm while processing")
@@ -136,6 +214,7 @@ class MainActivity : AppCompatActivity() {
         releaseCurrentAlgorithm()
         currentAlgorithm = newAlgorithm
         isInitialized = false
+        updateUIVisibility()
         
         if (modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton) {
             processImageMode()
@@ -160,8 +239,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         
-        imageView.visibility = View.VISIBLE
-        cameraPreviewView.visibility = View.GONE
+        updateUIVisibility()
         stopCamera()
         processImageMode()
     }
@@ -173,8 +251,7 @@ class MainActivity : AppCompatActivity() {
         }
         
         if (allPermissionsGranted()) {
-            imageView.visibility = View.GONE
-            cameraPreviewView.visibility = View.VISIBLE
+            updateUIVisibility()
             startCamera()
         } else {
             Toast.makeText(this, "Camera permission required", Toast.LENGTH_SHORT).show()
@@ -273,18 +350,37 @@ class MainActivity : AppCompatActivity() {
                     objectDetectionSample.processObjectDetection(personBmp, canvas, paint2, textPaint, w, h)
                 }
                 AlgorithmType.CLASSIFICATION -> {
-                    classificationSample.processClassification(personBmp)
+                    val time = classificationSample.processClassification(personBmp)
+                    val result = classificationSample.getLastClassificationResult()
+                    runOnUiThread {
+                        classificationResultTextView.text = "Classification Result: $result"
+                    }
+                    time
                 }
                 AlgorithmType.TOKENIZE -> {
-                    tokenizerSample.processTokenization("Hello world from ailia!")
+                    val inputText = tokenizerInputEditText.text.toString().ifEmpty { "Hello world from ailia!" }
+                    val time = tokenizerSample.processTokenization(inputText)
+                    val tokens = tokenizerSample.getLastTokenizationResult()
+                    runOnUiThread {
+                        tokenizerOutputTextView.text = "Tokens: $tokens"
+                    }
+                    time
                 }
                 AlgorithmType.TRACKING -> {
-                    trackerSample.processTracking(canvas, paint2, w, h)
+                    val detectionResults = objectDetectionSample.getDetectionResults(personBmp)
+                    val time = trackerSample.processTrackingWithDetections(canvas, paint2, w, h, detectionResults)
+                    val trackingInfo = trackerSample.getLastTrackingResult()
+                    runOnUiThread {
+                        trackingResultTextView.text = "Tracking Results: $trackingInfo"
+                    }
+                    time
                 }
             }
             
             runOnUiThread {
-                imageView.setImageBitmap(bitmap)
+                if (currentAlgorithm != AlgorithmType.TOKENIZE) {
+                    imageView.setImageBitmap(bitmap)
+                }
                 processingTimeTextView.text = "Processing Time: ${processingTime}ms (${currentAlgorithm.name})"
             }
             
@@ -352,6 +448,12 @@ class MainActivity : AppCompatActivity() {
         }
         
         private fun processCameraFrame(image: ImageProxy) {
+            if (isProcessing.get()) {
+                return
+            }
+            
+            isProcessing.set(true)
+            
             try {
                 val bitmap = imageProxyToBitmap(image)
                 val img = loadRawImage(bitmap)
@@ -379,8 +481,40 @@ class MainActivity : AppCompatActivity() {
                 }
                 
                 val startTime = System.nanoTime()
-                val poseTime = poseEstimatorSample.processPoseEstimation(img, canvas, paint, w, h)
-                val detectionTime = objectDetectionSample.processObjectDetection(bitmap, canvas, paint2, textPaint, w, h)
+                val processingTime = when (currentAlgorithm) {
+                    AlgorithmType.POSE_ESTIMATION -> {
+                        poseEstimatorSample.processPoseEstimation(img, canvas, paint, w, h)
+                    }
+                    AlgorithmType.OBJECT_DETECTION -> {
+                        objectDetectionSample.processObjectDetection(bitmap, canvas, paint2, textPaint, w, h)
+                    }
+                    AlgorithmType.CLASSIFICATION -> {
+                        val time = classificationSample.processClassification(bitmap)
+                        val result = classificationSample.getLastClassificationResult()
+                        runOnUiThread {
+                            classificationResultTextView.text = "Classification Result: $result"
+                        }
+                        time
+                    }
+                    AlgorithmType.TOKENIZE -> {
+                        val inputText = tokenizerInputEditText.text.toString().ifEmpty { "Hello world from ailia!" }
+                        val time = tokenizerSample.processTokenization(inputText)
+                        val tokens = tokenizerSample.getLastTokenizationResult()
+                        runOnUiThread {
+                            tokenizerOutputTextView.text = "Tokens: $tokens"
+                        }
+                        time
+                    }
+                    AlgorithmType.TRACKING -> {
+                        val detectionResults = objectDetectionSample.getDetectionResults(bitmap)
+                        val time = trackerSample.processTrackingWithDetections(canvas, paint2, w, h, detectionResults)
+                        val trackingInfo = trackerSample.getLastTrackingResult()
+                        runOnUiThread {
+                            trackingResultTextView.text = "Tracking Results: $trackingInfo"
+                        }
+                        time
+                    }
+                }
                 val totalTime = (System.nanoTime() - startTime) / 1000000
                 
                 runOnUiThread {

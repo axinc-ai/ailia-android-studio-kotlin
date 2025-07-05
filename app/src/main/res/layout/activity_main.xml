@@ -77,6 +77,89 @@
         app:layout_constraintEnd_toEndOf="parent"
         android:layout_marginTop="16dp" />
 
+    <ScrollView
+        android:id="@+id/resultScrollView"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="16dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/processingTimeTextView">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:id="@+id/classificationResultTextView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Classification Result: --"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:visibility="gone"
+                android:layout_marginBottom="16dp" />
+
+            <TextView
+                android:id="@+id/tokenizerInputLabel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Input Text:"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:visibility="gone"
+                android:layout_marginBottom="8dp" />
+
+            <EditText
+                android:id="@+id/tokenizerInputEditText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Enter text to tokenize..."
+                android:text="Hello world."
+                android:minLines="2"
+                android:maxLines="4"
+                android:visibility="gone"
+                android:layout_marginBottom="16dp" />
+
+            <TextView
+                android:id="@+id/tokenizerOutputLabel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Tokenized Output:"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:visibility="gone"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:id="@+id/tokenizerOutputTextView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Tokens: --"
+                android:textSize="14sp"
+                android:fontFamily="monospace"
+                android:visibility="gone"
+                android:layout_marginBottom="16dp" />
+
+            <TextView
+                android:id="@+id/trackingResultTextView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Tracking Results: --"
+                android:textSize="16sp"
+                android:visibility="gone"
+                android:layout_marginBottom="16dp" />
+
+        </LinearLayout>
+    </ScrollView>
+
     <androidx.camera.view.PreviewView
         android:id="@+id/cameraPreviewView"
         android:layout_width="0dp"

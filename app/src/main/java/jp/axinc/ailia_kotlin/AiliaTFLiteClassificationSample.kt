@@ -61,6 +61,7 @@ class AiliaTFLiteClassificationSample {
     private var outputType: Int = -1
     private var quantScale: Float = 1.0f
     private var quantZeroPoint: Long = 0L
+    private var lastClassificationResult: String = ""
 
     fun initializeClassification(modelData: ByteArray?, env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
         if (modelData == null || modelData.isEmpty()) {
@@ -164,7 +165,7 @@ class AiliaTFLiteClassificationSample {
                 return -1
             }
 
-            postProcess(inputShape!!, outputShape!!, outputData, outputType, quantScale, quantZeroPoint)
+            lastClassificationResult = postProcess(inputShape!!, outputShape!!, outputData, outputType, quantScale, quantZeroPoint)
 
             (endTime - startTime) / 1000000
         } catch (e: Exception) {
@@ -276,7 +277,7 @@ class AiliaTFLiteClassificationSample {
         outputTensorType: Int,
         quantScale: Float,
         quantZeroPoint: Long,
-    ) {
+    ): String {
         var max_c = 0.0f;
         var max_i = 0;
         for (i in 0 until 1000) {
@@ -286,7 +287,13 @@ class AiliaTFLiteClassificationSample {
                 max_i = i;
             }
         }
+        val result = "${CocoAndImageNetLabels.IMAGENET_CATEGORY[max_i]} (${String.format("%.2f", max_c)})"
         Log.i(TAG, "class " + max_i.toString() + " " + CocoAndImageNetLabels.IMAGENET_CATEGORY[max_i] + " confidence " + max_c.toString())
+        return result
+    }
+    
+    fun getLastClassificationResult(): String {
+        return lastClassificationResult
     }
 
 }

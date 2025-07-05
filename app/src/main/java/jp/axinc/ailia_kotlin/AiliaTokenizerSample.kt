@@ -6,6 +6,7 @@ import axip.ailia_tokenizer.AiliaTokenizer
 class AiliaTokenizerSample {
     private var tokenizer: AiliaTokenizer? = null
     private var isInitialized = false
+    private var lastTokenizationResult: String = ""
 
     fun initializeTokenizer(tokenizerType: Int = AiliaTokenizer.AILIA_TOKENIZER_TYPE_WHISPER): Boolean {
         return try {
@@ -34,11 +35,13 @@ class AiliaTokenizerSample {
             val startTime = System.nanoTime()
             
             val tokens = tokenizer!!.encode(text)
-            var tokensText = "Tokens: "
+            var tokensText = ""
             for (i in tokens.indices) {
-                tokensText += "${tokens[i]}, "
+                tokensText += "${tokens[i]}"
+                if (i < tokens.size - 1) tokensText += ", "
             }
-            Log.i("AILIA_Main", tokensText)
+            lastTokenizationResult = tokensText
+            Log.i("AILIA_Main", "Tokens: $tokensText")
             
             val endTime = System.nanoTime()
             (endTime - startTime) / 1000000
@@ -58,6 +61,10 @@ class AiliaTokenizerSample {
             isInitialized = false
             Log.i("AILIA_Main", "Tokenizer released")
         }
+    }
+    
+    fun getLastTokenizationResult(): String {
+        return lastTokenizationResult
     }
 
     fun ailia_tokenize(): Boolean {
