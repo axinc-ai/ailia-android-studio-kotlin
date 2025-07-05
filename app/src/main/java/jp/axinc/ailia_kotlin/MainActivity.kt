@@ -48,6 +48,7 @@ class MainActivity : AppCompatActivity() {
     private var selectedEnv: AiliaEnvironment? = null
     private var isInitialized = false
     private var currentAlgorithm = AlgorithmType.POSE_ESTIMATION
+    private var pendingAlgorithmSwitch: AlgorithmType? = null
     private var isProcessing = AtomicBoolean(false)
     
     private var imageAnalyzer: ImageAnalysis? = null
@@ -263,10 +264,15 @@ class MainActivity : AppCompatActivity() {
     
     private fun switchAlgorithm(newAlgorithm: AlgorithmType) {
         if (isProcessing.get()) {
-            Log.w("AILIA_Main", "Cannot switch algorithm while processing")
+            Log.i("AILIA_Main", "Processing active, queuing algorithm switch to ${newAlgorithm.name}")
+            pendingAlgorithmSwitch = newAlgorithm
             return
         }
         
+        executeAlgorithmSwitch(newAlgorithm)
+    }
+    
+    private fun executeAlgorithmSwitch(newAlgorithm: AlgorithmType) {
         releaseCurrentAlgorithm()
         currentAlgorithm = newAlgorithm
         isInitialized = false
@@ -414,6 +420,11 @@ class MainActivity : AppCompatActivity() {
             }
         } finally {
             isProcessing.set(false)
+            
+            pendingAlgorithmSwitch?.let { pendingAlgorithm ->
+                pendingAlgorithmSwitch = null
+                executeAlgorithmSwitch(pendingAlgorithm)
+            }
         }
     }
     
@@ -498,6 +509,13 @@ class MainActivity : AppCompatActivity() {
                 Log.e("AILIA_Error", "Error processing camera frame: ${e.message}")
             } finally {
                 isProcessing.set(false)
+                
+                pendingAlgorithmSwitch?.let { pendingAlgorithm ->
+                    pendingAlgorithmSwitch = null
+                    runOnUiThread {
+                        executeAlgorithmSwitch(pendingAlgorithm)
+                    }
+                }
             }
         }
     }
