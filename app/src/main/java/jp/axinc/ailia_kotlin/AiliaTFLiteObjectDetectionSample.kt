@@ -322,7 +322,7 @@ class AiliaTFLiteObjectDetectionSample {
                     val c = dequantUint8(outputBuffer[bufIndex + 4], quantScale, quantZeroPoint, outputTensorType)
                     score *= c
 
-                    val detThreshold = 0.5f
+                    val detThreshold = 0.25f
                     if (score >= detThreshold) {
                         val cx = dequantUint8(outputBuffer[bufIndex + 0], quantScale, quantZeroPoint, outputTensorType)
                         val cy = dequantUint8(outputBuffer[bufIndex + 1], quantScale, quantZeroPoint, outputTensorType)

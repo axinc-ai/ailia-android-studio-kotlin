@@ -528,18 +528,18 @@ class MainActivity : AppCompatActivity() {
             isProcessing.set(true)
             
             try {
-                var bitmap = imageProxyToBitmap(image)
-                bitmap = cropToSquare(bitmap)
+                var camera_bitmap = imageProxyToBitmap(image)
+                camera_bitmap = cropToSquare(camera_bitmap)
 
-                val img = loadRawImage(bitmap)
-                val w = bitmap.width
-                val h = bitmap.height
+                val img = loadRawImage(camera_bitmap)
+                val w = camera_bitmap.width
+                val h = camera_bitmap.height
 
                 Log.i("AILIA_Main", "${w} ${h}")
 
-                val resultBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                val canvas = Canvas(resultBitmap)
-                canvas.drawBitmap(bitmap, 0f, 0f, null)
+                val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(bitmap)
+                canvas.drawBitmap(camera_bitmap, 0f, 0f, null)
                 
                 val processingTime = processAlgorithm(img, bitmap, canvas, w, h)
                 
