@@ -43,9 +43,15 @@ class AiliaTFLiteObjectDetectionSample {
                 val r = (pixel shr 16) and 0xFF
                 val g = (pixel shr 8) and 0xFF
                 val b = pixel and 0xFF
-                buffer[(y * inputShape[2] + x) * channels + 0] = b.toByte()
-                buffer[(y * inputShape[2] + x) * channels + 1] = g.toByte()
-                buffer[(y * inputShape[2] + x) * channels + 2] = r.toByte()
+                if (inputTensorType == AiliaTFLite.AILIA_TFLITE_TENSOR_TYPE_INT8) {
+                    buffer[(y * inputShape[2] + x) * channels + 0] = (b - 128).toByte()
+                    buffer[(y * inputShape[2] + x) * channels + 1] = (g - 128).toByte()
+                    buffer[(y * inputShape[2] + x) * channels + 2] = (r - 128).toByte()
+                } else {
+                    buffer[(y * inputShape[2] + x) * channels + 0] = b.toByte()
+                    buffer[(y * inputShape[2] + x) * channels + 1] = g.toByte()
+                    buffer[(y * inputShape[2] + x) * channels + 2] = r.toByte()
+                }
             }
         }
         return buffer
