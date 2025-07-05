@@ -53,7 +53,10 @@ class MainActivity : AppCompatActivity() {
     private var pendingAlgorithmSwitch: AlgorithmType? = null
     private var pendingModeSwitch: Int? = null
     private var isProcessing = AtomicBoolean(false)
-    
+    private var isWaitAlgorithmSwitch = AtomicBoolean(false)
+    private var isWaitModeSwitch = AtomicBoolean(false)
+    private var isStopCamera = AtomicBoolean(false)
+
     private var imageAnalyzer: ImageAnalysis? = null
     private var camera: Camera? = null
 
@@ -453,6 +456,8 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun startCamera() {
+        isStopCamera.set(false)
+
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         
         cameraProviderFuture.addListener({
@@ -484,6 +489,7 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun stopCamera() {
+        isStopCamera.set(true)
         try {
             val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
             cameraProviderFuture.addListener({
@@ -514,6 +520,9 @@ class MainActivity : AppCompatActivity() {
 
     private inner class CameraFrameAnalyzer : ImageAnalysis.Analyzer {
         override fun analyze(image: ImageProxy) {
+            if (!isInitialized) {
+                initializeAilia()
+            }
             if (isInitialized) {
                 processCameraFrame(image)
             }
@@ -522,6 +531,15 @@ class MainActivity : AppCompatActivity() {
         
         private fun processCameraFrame(image: ImageProxy) {
             if (isProcessing.get()) {
+                return
+            }
+            if (isWaitAlgorithmSwitch.get()) {
+                return
+            }
+            if (isWaitModeSwitch.get()) {
+                return
+            }
+            if (isStopCamera.get()) {
                 return
             }
             
@@ -559,15 +577,19 @@ class MainActivity : AppCompatActivity() {
                 
                 pendingAlgorithmSwitch?.let { pendingAlgorithm ->
                     pendingAlgorithmSwitch = null
+                    isWaitAlgorithmSwitch.set(true)
                     runOnUiThread {
                         executeAlgorithmSwitch(pendingAlgorithm)
+                        isWaitAlgorithmSwitch.set(false)
                     }
                 }
                 
                 pendingModeSwitch?.let { pendingMode ->
                     pendingModeSwitch = null
+                    isWaitModeSwitch.set(true)
                     runOnUiThread {
                         executeModeSwitch(pendingMode)
+                        isWaitModeSwitch.set(false)
                     }
                 }
             }
