@@ -357,7 +357,10 @@ class MainActivity : AppCompatActivity() {
                     isInitialized = tokenizerSample.initializeTokenizer()
                 }
                 AlgorithmType.TRACKING -> {
-                    isInitialized = trackerSample.initializeTracker()
+                    val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_tiny)
+                    if (objectDetectionSample.initializeObjectDetection(yoloxModel)) {
+                        isInitialized = trackerSample.initializeTracker()
+                    }
                 }
             }
             

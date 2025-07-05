@@ -338,18 +338,6 @@ class AiliaTFLiteObjectDetectionSample {
                         boxes.add(bbox)
                         scores.add(score)
                         categories.add(maxClass)
-                        
-                        detectionResults.add(AiliaTrackerSample.DetectionResult(
-                            category = maxClass,
-                            confidence = score,
-                            x = bbox.left,
-                            y = bbox.top,
-                            width = bbox.width(),
-                            height = bbox.height()
-                        ))
-
-                        Log.i(TAG, "s=$s, x=$x, y=$y, class=[$maxClass, ${CocoAndImageNetLabels.COCO_CATEGORY[maxClass]}], score=$score, " +
-                                "cx=$cx, cy=$cy, w=$w, h=$h, c=$c, bb=[$bbCx,$bbCy,$bbW,$bbH]")
                     }
 
                     bufIndex += numElements
@@ -370,6 +358,17 @@ class AiliaTFLiteObjectDetectionSample {
                 paint
             )
             canvas.drawText(CocoAndImageNetLabels.COCO_CATEGORY[categories[i]] + " " + scores[i].toString(), bbox.left * originalW, bbox.top * originalH, text)
+
+            detectionResults.add(AiliaTrackerSample.DetectionResult(
+                category = categories[i],
+                confidence = scores[i],
+                x = bbox.left,
+                y = bbox.top,
+                width = bbox.width(),
+                height = bbox.height()
+            ))
+
+            Log.i(TAG, "x=${bbox.left}, y=${bbox.top}, w=${bbox.width()}, h=${bbox.height()}, class=[${categories[i]}, ${CocoAndImageNetLabels.COCO_CATEGORY[categories[i]]}], score=${scores[i]}")
         }
         
         return detectionResults
