@@ -1,7 +1,9 @@
 package jp.axinc.ailia_kotlin
 
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.PointF
 import android.util.Log
 import axip.ailia_tracker.AiliaTracker
 
@@ -13,6 +15,8 @@ class AiliaTrackerSample {
     private var tracker: AiliaTracker? = null
     private var isInitialized = false
     private var lastTrackingResult: String = ""
+    private val trajectoryPoints = mutableMapOf<Int, MutableList<PointF>>()
+    private val maxTrajectoryPoints = 50
 
     fun initializeTracker(): Boolean {
         return try {
@@ -109,6 +113,7 @@ class AiliaTrackerSample {
         } finally {
             tracker = null
             isInitialized = false
+            trajectoryPoints.clear()
             Log.i(TAG, "Tracker released")
         }
     }
@@ -151,6 +156,44 @@ class AiliaTrackerSample {
                         Log.d(TAG, "Object $i: id=${it.id}, category=${it.category}, prob=${it.prob}, x=${it.x}, y=${it.y}, w=${it.w}, h=${it.h}")
                         trackingInfo += "\nID:${it.id} Cat:${it.category} Conf:${String.format("%.2f", it.prob)}"
                         
+                        // Calculate center point of bounding box
+                        val centerX = w * (it.x + it.w / 2)
+                        val centerY = h * (it.y + it.h / 2)
+                        val centerPoint = PointF(centerX, centerY)
+                        
+                        // Update trajectory points for this ID
+                        val trajectoryList = trajectoryPoints.getOrPut(it.id) { mutableListOf() }
+                        trajectoryList.add(centerPoint)
+                        
+                        // Limit trajectory points to prevent memory issues
+                        if (trajectoryList.size > maxTrajectoryPoints) {
+                            trajectoryList.removeAt(0)
+                        }
+                        
+                        // Generate color based on ID
+                        val trajectoryColor = generateColorForId(it.id)
+                        
+                        // Draw trajectory lines
+                        if (trajectoryList.size > 1) {
+                            val trajectoryPaint = Paint().apply {
+                                color = trajectoryColor
+                                strokeWidth = 3f
+                                style = Paint.Style.STROKE
+                                isAntiAlias = true
+                            }
+                            
+                            for (j in 1 until trajectoryList.size) {
+                                val prevPoint = trajectoryList[j - 1]
+                                val currPoint = trajectoryList[j]
+                                canvas.drawLine(
+                                    prevPoint.x, prevPoint.y,
+                                    currPoint.x, currPoint.y,
+                                    trajectoryPaint
+                                )
+                            }
+                        }
+                        
+                        // Draw bounding box
                         canvas.drawRect(
                             (w * it.x).toFloat(),
                             (h * it.y).toFloat(),
@@ -159,6 +202,7 @@ class AiliaTrackerSample {
                             paint
                         )
                         
+                        // Draw tracking ID
                         val textPaint = Paint().apply {
                             color = android.graphics.Color.WHITE
                             textSize = 24f
@@ -185,6 +229,14 @@ class AiliaTrackerSample {
     
     fun getLastTrackingResult(): String {
         return lastTrackingResult
+    }
+    
+    private fun generateColorForId(id: Int): Int {
+        // Generate a unique color for each ID using HSV color space
+        val hue = (id * 137.508f) % 360f // Golden angle approximation for good color distribution
+        val saturation = 0.8f
+        val value = 0.9f
+        return Color.HSVToColor(floatArrayOf(hue, saturation, value))
     }
     
     data class DetectionResult(
