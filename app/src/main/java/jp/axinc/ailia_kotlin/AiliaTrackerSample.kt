@@ -72,7 +72,9 @@ class AiliaTrackerSample {
                 }
             }
 
-            val computeResult = tracker!!.compute(w, h)
+            val threshold: Float = 0.1f;
+            val iou:Float = 0.7f;
+            val computeResult = tracker!!.compute(threshold, iou)
             if (computeResult == 0) {
                 Log.d(TAG, "Successfully computed tracking")
 
