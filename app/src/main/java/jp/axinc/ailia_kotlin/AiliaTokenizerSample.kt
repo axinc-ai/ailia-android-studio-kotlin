@@ -66,16 +66,4 @@ class AiliaTokenizerSample {
     fun getLastTokenizationResult(): String {
         return lastTokenizationResult
     }
-
-    fun ailia_tokenize(): Boolean {
-        val tokenizer: axip.ailia_tokenizer.AiliaTokenizer = axip.ailia_tokenizer.AiliaTokenizer(tokenizerType = axip.ailia_tokenizer.AiliaTokenizer.AILIA_TOKENIZER_TYPE_WHISPER)
-        var tokens = tokenizer.encode("Hello world.")
-        var tokens_text = "Tokens : "
-        for (i in 0 until tokens.indices.count()){
-            tokens_text += tokens[i].toString() + " , "
-        }
-        Log.i("AILIA_Main", tokens_text)
-        tokenizer.close()
-        return true;
-    }
 }
