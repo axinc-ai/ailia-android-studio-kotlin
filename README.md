@@ -20,32 +20,17 @@ git submodule update
 
 ## Supported models
 
-### ailia SDK
+|Category|Model|SDK|
+|-----|-----|-----|
+|Pose Estimation|[Light Weight Human Pose Estimation](app/src/main/java/jp/axinc/ailia_kotlin/AiliaPoseEstimatorSample.kt)|ailia SDK (ONNX)|
+|Object Detection|[YOLOX](app/src/main/java/jp/axinc/ailia_kotlin/AiliaTFLiteObjectDetectionSample.kt)|ailia TFLite Runtime|
+|Object Tracking|[ByteTrack](app/src/main/java/jp/axinc/ailia_kotlin/AiliaTrackerSample.kt)|ailia TFLite Runtime + ailia Tracker|
+|Image Classification|[MobileNetV2](app/src/main/java/jp/axinc/ailia_kotlin/AiliaTFLiteClassificationSample.kt)|ailia TFLite Runtime|
+|NLP|[GPT2 Tokenizer](app/src/main/java/jp/axinc/ailia_kotlin/AiliaTokenizerSample.kt)|ailia Tokenizer|
 
-#### Light Weight Human Pose Estimation
+## Usage
 
-Estimate keypoints of person.
-
-Input
-
-<img src="./app/src/main/res/raw/person.jpg" width=480 height=480/>
-
-Output
+You can select the model at the top. In the second, you can choose between image or camera.
 
 ![input image](./demo/pose_estimation.png)
-
-### ailia TFLite Runtime
-
-#### YOLOX
-
-Estimate bounding box of object.
-
 ![input image](./demo/yolox.png)
-
-### ailia Tracker
-
-Tracking object using ByteTrack.
-
-### ailia Tokenizer
-
-#### TBD

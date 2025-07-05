@@ -17,6 +17,17 @@ class AiliaTFLiteObjectDetectionSample {
         private const val TAG = "AILIA_Main"
     }
 
+    private var tflite: AiliaTFLite? = null
+    private var isInitialized = false
+    private var inputShape: IntArray? = null
+    private var inputTensorIndex: Int = -1
+    private var outputTensorIndex: Int = -1
+    private var outputShape: IntArray? = null
+    private var outputType: Int = -1
+    private var quantScale: Float = 1.0f
+    private var quantZeroPoint: Long = 0L
+    private var lastDetectionResults: List<AiliaTrackerSample.DetectionResult> = emptyList()
+
     private fun loadImage(inputTensorType: Int, inputBuffer: ByteArray, inputShape: IntArray, bitmap : Bitmap): ByteArray {
         Log.i(TAG, ""+inputShape[0].toString()+" "+inputShape[1].toString()+ " "+inputShape[2].toString()+ " "+inputShape[3].toString())
         val scaledBitmap = Bitmap.createScaledBitmap(bitmap, inputShape[2], inputShape[1], true)
@@ -32,9 +43,15 @@ class AiliaTFLiteObjectDetectionSample {
                 val r = (pixel shr 16) and 0xFF
                 val g = (pixel shr 8) and 0xFF
                 val b = pixel and 0xFF
-                buffer[(y * inputShape[2] + x) * channels + 0] = b.toByte()
-                buffer[(y * inputShape[2] + x) * channels + 1] = g.toByte()
-                buffer[(y * inputShape[2] + x) * channels + 2] = r.toByte()
+                if (inputTensorType == AiliaTFLite.AILIA_TFLITE_TENSOR_TYPE_INT8) {
+                    buffer[(y * inputShape[2] + x) * channels + 0] = (b - 128).toByte()
+                    buffer[(y * inputShape[2] + x) * channels + 1] = (g - 128).toByte()
+                    buffer[(y * inputShape[2] + x) * channels + 2] = (r - 128).toByte()
+                } else {
+                    buffer[(y * inputShape[2] + x) * channels + 0] = b.toByte()
+                    buffer[(y * inputShape[2] + x) * channels + 1] = g.toByte()
+                    buffer[(y * inputShape[2] + x) * channels + 2] = r.toByte()
+                }
             }
         }
         return buffer
@@ -50,81 +67,211 @@ class AiliaTFLiteObjectDetectionSample {
         }
     }
 
-    fun detection(modelData: ByteArray?, bitmap: Bitmap, canvas: Canvas, paint: Paint, text: Paint, w: Int, h: Int, env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
-        if (modelData == null){
-            Log.e(TAG, "Failed to open model data")
-            return false;
-        }
-
-        val tflite = AiliaTFLite()
-        if (!tflite.open(modelData, env)) {
-            Log.e(TAG, "Failed to open TFLite model")
+    fun initializeObjectDetection(modelData: ByteArray?, env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
+        if (modelData == null || modelData.isEmpty()) {
+            Log.e(TAG, "Model data is null or empty")
             return false
         }
 
-        if (!tflite.allocateTensors()) {
-            Log.e(TAG, "Failed to allocate tensors")
-            tflite.close()
-            return false
+        if (isInitialized) {
+            releaseObjectDetection()
         }
 
-        val inputTensorIndex = tflite.getInputTensorIndex(0)
-        val inputShape = tflite.getInputTensorShape(0) ?: run {
-            Log.e(TAG, "Failed to get input tensor shape")
-            tflite.close()
-            return false
+        return try {
+            tflite = AiliaTFLite()
+            if (!tflite!!.open(modelData, env)) {
+                Log.e(TAG, "Failed to open TFLite model")
+                releaseObjectDetection()
+                return false
+            }
+
+            if (!tflite!!.allocateTensors()) {
+                Log.e(TAG, "Failed to allocate tensors")
+                releaseObjectDetection()
+                return false
+            }
+
+            inputTensorIndex = tflite!!.getInputTensorIndex(0)
+            if (inputTensorIndex < 0) {
+                Log.e(TAG, "Invalid input tensor index: $inputTensorIndex")
+                releaseObjectDetection()
+                return false
+            }
+
+            inputShape = tflite!!.getInputTensorShape(0) ?: run {
+                Log.e(TAG, "Failed to get input tensor shape")
+                releaseObjectDetection()
+                return false
+            }
+
+            if (inputShape!!.size != 4 || inputShape!!.any { it <= 0 }) {
+                Log.e(TAG, "Invalid input shape: ${inputShape!!.contentToString()}")
+                releaseObjectDetection()
+                return false
+            }
+
+            outputTensorIndex = tflite!!.getOutputTensorIndex(0)
+            if (outputTensorIndex < 0) {
+                Log.e(TAG, "Invalid output tensor index: $outputTensorIndex")
+                releaseObjectDetection()
+                return false
+            }
+
+            outputShape = tflite!!.getOutputTensorShape(0) ?: run {
+                Log.e(TAG, "Failed to get output tensor shape")
+                releaseObjectDetection()
+                return false
+            }
+
+            if (outputShape!!.isEmpty() || outputShape!!.any { it <= 0 }) {
+                Log.e(TAG, "Invalid output shape: ${outputShape!!.contentToString()}")
+                releaseObjectDetection()
+                return false
+            }
+
+            outputType = tflite!!.getOutputTensorType(0)
+
+            val quantCount = tflite!!.getTensorQuantizationCount(outputTensorIndex)
+            if (quantCount != 1) {
+                Log.e(TAG, "Unexpected quantization count: $quantCount")
+                releaseObjectDetection()
+                return false
+            }
+
+            quantScale = tflite!!.getTensorQuantizationScale(outputTensorIndex)?.get(0) ?: 1.0f
+            quantZeroPoint = tflite!!.getTensorQuantizationZeroPoint(outputTensorIndex)?.get(0) ?: 0L
+
+            isInitialized = true
+            Log.i(TAG, "Object detection initialized successfully - Input: ${inputShape!!.contentToString()}, Output: ${outputShape!!.contentToString()}")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize object detection: ${e.javaClass.name}: ${e.message}")
+            e.printStackTrace()
+            releaseObjectDetection()
+            false
         }
-
-        val inputTensorType = tflite.getInputTensorType(0)
-        val inputBuffer = loadImage(inputTensorType, ByteArray(inputShape[1] * inputShape[2] * inputShape[3]), inputShape, bitmap)
-
-        if (!tflite.setTensorData(inputTensorIndex, inputBuffer)) {
-            Log.e(TAG, "Failed to set input tensor data")
-            tflite.close()
-            return false
-        }
-
-        // Measure time
-        val startTime = System.nanoTime()
-        if (!tflite.predict()) {
-            Log.e(TAG, "Predict failed")
-            tflite.close()
-            return false
-        }
-        val endTime = System.nanoTime()
-        Log.i(TAG, "Inference time: ${(endTime - startTime) / 1000000} ms")
-
-        val outputTensorIndex = tflite.getOutputTensorIndex(0)
-        val outputShape = tflite.getOutputTensorShape(0) ?: run {
-            Log.e(TAG, "Failed to get output tensor shape")
-            tflite.close()
-            return false
-        }
-
-        val outputType = tflite.getOutputTensorType(0)
-        val outputData = tflite.getTensorData(outputTensorIndex) ?: run {
-            Log.e(TAG, "Failed to get output tensor data")
-            tflite.close()
-            return false
-        }
-
-        val quantCount = tflite.getTensorQuantizationCount(outputTensorIndex)
-        if (quantCount != 1) {
-            Log.e(TAG, "Unexpected quantization count: $quantCount")
-            tflite.close()
-            return false
-        }
-
-        val quantScale = tflite.getTensorQuantizationScale(outputTensorIndex)?.get(0) ?: 1.0f
-        val quantZeroPoint = tflite.getTensorQuantizationZeroPoint(outputTensorIndex)?.get(0) ?: 0L
-
-        postProcessYolox(inputShape, outputShape, outputData, outputType, quantScale, quantZeroPoint, canvas, paint, text, w, h)
-
-        tflite.close()
-        return true
     }
 
+    fun processObjectDetectionWithoutDrawing(bitmap: Bitmap, w: Int, h: Int): Long {
+        if (!isInitialized || tflite == null || inputShape == null || outputShape == null) {
+            Log.e(TAG, "Object detection not initialized properly")
+            return -1
+        }
 
+        return try {
+            val inputTensorType = tflite!!.getInputTensorType(0)
+            val dummyBuffer = ByteArray(inputShape!![1] * inputShape!![2] * inputShape!![3])
+            val inputBuffer = loadImage(inputTensorType, dummyBuffer, inputShape!!, bitmap)
+
+            if (inputBuffer.isEmpty()) {
+                Log.e(TAG, "Failed to load image data")
+                return -1
+            }
+
+            if (!tflite!!.setTensorData(inputTensorIndex, inputBuffer)) {
+                Log.e(TAG, "Failed to set input tensor data")
+                return -1
+            }
+
+            val startTime = System.nanoTime()
+            if (!tflite!!.predict()) {
+                Log.e(TAG, "Predict failed")
+                return -1
+            }
+            val endTime = System.nanoTime()
+
+            val outputData = tflite!!.getTensorData(outputTensorIndex) ?: run {
+                Log.e(TAG, "Failed to get output tensor data")
+                return -1
+            }
+
+            if (outputData.isEmpty()) {
+                Log.e(TAG, "Output data is empty")
+                return -1
+            }
+
+            // Create dummy canvas for processing without drawing
+            val dummyBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val dummyCanvas = Canvas(dummyBitmap)
+            val dummyPaint = Paint()
+            val dummyTextPaint = Paint()
+
+            lastDetectionResults = postProcessYolox(inputShape!!, outputShape!!, outputData, outputType, quantScale, quantZeroPoint, dummyCanvas, dummyPaint, dummyTextPaint, w, h)
+
+            return (endTime - startTime) / 1000000
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to process object detection: ${e.javaClass.name}: ${e.message}")
+            e.printStackTrace()
+            -1
+        }
+    }
+
+    fun processObjectDetection(bitmap: Bitmap, canvas: Canvas, paint: Paint, text: Paint, w: Int, h: Int): Long {
+        if (!isInitialized || tflite == null || inputShape == null || outputShape == null) {
+            Log.e(TAG, "Object detection not initialized properly")
+            return -1
+        }
+
+        return try {
+            val inputTensorType = tflite!!.getInputTensorType(0)
+            val dummyBuffer = ByteArray(inputShape!![1] * inputShape!![2] * inputShape!![3])
+            val inputBuffer = loadImage(inputTensorType, dummyBuffer, inputShape!!, bitmap)
+
+            if (inputBuffer.isEmpty()) {
+                Log.e(TAG, "Failed to load image data")
+                return -1
+            }
+
+            if (!tflite!!.setTensorData(inputTensorIndex, inputBuffer)) {
+                Log.e(TAG, "Failed to set input tensor data")
+                return -1
+            }
+
+            val startTime = System.nanoTime()
+            if (!tflite!!.predict()) {
+                Log.e(TAG, "Predict failed")
+                return -1
+            }
+            val endTime = System.nanoTime()
+
+            val outputData = tflite!!.getTensorData(outputTensorIndex) ?: run {
+                Log.e(TAG, "Failed to get output tensor data")
+                return -1
+            }
+
+            if (outputData.isEmpty()) {
+                Log.e(TAG, "Output data is empty")
+                return -1
+            }
+
+            lastDetectionResults = postProcessYolox(inputShape!!, outputShape!!, outputData, outputType, quantScale, quantZeroPoint, canvas, paint, text, w, h)
+
+            return (endTime - startTime) / 1000000
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to process object detection: ${e.javaClass.name}: ${e.message}")
+            e.printStackTrace()
+            -1
+        }
+    }
+
+    fun releaseObjectDetection() {
+        try {
+            tflite?.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing object detection: ${e.javaClass.name}: ${e.message}")
+        } finally {
+            tflite = null
+            isInitialized = false
+            inputShape = null
+            inputTensorIndex = -1
+            outputTensorIndex = -1
+            outputShape = null
+            outputType = -1
+            quantScale = 1.0f
+            quantZeroPoint = 0L
+            Log.i(TAG, "Object detection released")
+        }
+    }
 
     data class RectF(var left: Float, var top: Float, var right: Float, var bottom: Float) {
         fun width() = right - left
@@ -144,7 +291,7 @@ class AiliaTFLiteObjectDetectionSample {
         text: Paint,
         originalW: Int,
         originalH: Int
-    ) {
+    ): List<AiliaTrackerSample.DetectionResult> {
         val ih = inputShape[1]
         val iw = inputShape[2]
         val oh = arrayOf(ih / 8, ih / 16, ih / 32)
@@ -153,12 +300,13 @@ class AiliaTFLiteObjectDetectionSample {
         val numElements = 5 + CocoAndImageNetLabels.COCO_CATEGORY.size
         if (numCells != outputShape[1] || numElements != outputShape[2]) {
             Log.e(TAG, "Error! YOLOX output_shape[1,2] mismatch")
-            return
+            return mutableListOf<AiliaTrackerSample.DetectionResult>()
         }
 
         val boxes = mutableListOf<RectF>()
         val scores = mutableListOf<Float>()
         val categories = mutableListOf<Int>()
+        val detectionResults = mutableListOf<AiliaTrackerSample.DetectionResult>()
 
         var bufIndex = 0
         for (s in 0..2) {
@@ -180,7 +328,7 @@ class AiliaTFLiteObjectDetectionSample {
                     val c = dequantUint8(outputBuffer[bufIndex + 4], quantScale, quantZeroPoint, outputTensorType)
                     score *= c
 
-                    val detThreshold = 0.5f
+                    val detThreshold = 0.25f
                     if (score >= detThreshold) {
                         val cx = dequantUint8(outputBuffer[bufIndex + 0], quantScale, quantZeroPoint, outputTensorType)
                         val cy = dequantUint8(outputBuffer[bufIndex + 1], quantScale, quantZeroPoint, outputTensorType)
@@ -192,12 +340,10 @@ class AiliaTFLiteObjectDetectionSample {
                         val bbW = exp(w) * stride + 1f
                         val bbH = exp(h) * stride + 1f
 
-                        boxes.add(RectF((bbCx - bbW/2) / iw, (bbCy - bbH/2) / ih, (bbCx + bbW/2) / iw, (bbCy + bbH/2) / ih))
+                        val bbox = RectF((bbCx - bbW/2) / iw, (bbCy - bbH/2) / ih, (bbCx + bbW/2) / iw, (bbCy + bbH/2) / ih)
+                        boxes.add(bbox)
                         scores.add(score)
                         categories.add(maxClass)
-
-                        Log.i(TAG, "s=$s, x=$x, y=$y, class=[$maxClass, ${CocoAndImageNetLabels.COCO_CATEGORY[maxClass]}], score=$score, " +
-                                "cx=$cx, cy=$cy, w=$w, h=$h, c=$c, bb=[$bbCx,$bbCy,$bbW,$bbH]")
                     }
 
                     bufIndex += numElements
@@ -218,7 +364,25 @@ class AiliaTFLiteObjectDetectionSample {
                 paint
             )
             canvas.drawText(CocoAndImageNetLabels.COCO_CATEGORY[categories[i]] + " " + scores[i].toString(), bbox.left * originalW, bbox.top * originalH, text)
+
+            detectionResults.add(AiliaTrackerSample.DetectionResult(
+                category = categories[i],
+                confidence = scores[i],
+                x = bbox.left,
+                y = bbox.top,
+                width = bbox.width(),
+                height = bbox.height()
+            ))
+
+            Log.i(TAG, "x=${bbox.left}, y=${bbox.top}, w=${bbox.width()}, h=${bbox.height()}, class=[${categories[i]}, ${CocoAndImageNetLabels.COCO_CATEGORY[categories[i]]}], score=${scores[i]}")
         }
+        
+        return detectionResults
+    }
+    
+    fun getDetectionResults(bitmap: Bitmap): List<AiliaTrackerSample.DetectionResult> {
+        // Return cached results from the last processObjectDetectionWithoutDrawing call
+        return lastDetectionResults
     }
 
     private fun applyNMS(boxes: List<RectF>, scores: List<Float>, scoreThreshold: Float, iouThreshold: Float): List<Int> {
