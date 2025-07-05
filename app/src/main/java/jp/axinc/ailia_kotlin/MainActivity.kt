@@ -217,7 +217,7 @@ class MainActivity : AppCompatActivity() {
                     imageView.visibility = View.VISIBLE
                     cameraPreviewView.visibility = View.GONE
                 } else {
-                    imageView.visibility = View.GONE
+                    imageView.visibility = View.VISIBLE
                     cameraPreviewView.visibility = View.VISIBLE
                 }
                 resultScrollView.visibility = View.VISIBLE
@@ -233,7 +233,7 @@ class MainActivity : AppCompatActivity() {
                     imageView.visibility = View.VISIBLE
                     cameraPreviewView.visibility = View.GONE
                 } else {
-                    imageView.visibility = View.GONE
+                    imageView.visibility = View.VISIBLE
                     cameraPreviewView.visibility = View.VISIBLE
                 }
                 resultScrollView.visibility = View.VISIBLE
@@ -249,7 +249,7 @@ class MainActivity : AppCompatActivity() {
                     imageView.visibility = View.VISIBLE
                     cameraPreviewView.visibility = View.GONE
                 } else {
-                    imageView.visibility = View.GONE
+                    imageView.visibility = View.VISIBLE
                     cameraPreviewView.visibility = View.VISIBLE
                 }
                 resultScrollView.visibility = View.GONE
@@ -347,17 +347,20 @@ class MainActivity : AppCompatActivity() {
                 }
                 AlgorithmType.OBJECT_DETECTION -> {
                     val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_tiny)
-                    isInitialized = objectDetectionSample.initializeObjectDetection(yoloxModel)
+                    isInitialized = objectDetectionSample.initializeObjectDetection(yoloxModel, env = AiliaTFLite.AILIA_TFLITE_ENV_NNAPI)
                 }
                 AlgorithmType.CLASSIFICATION -> {
                     val classificationModel: ByteArray? = loadRawFile(R.raw.mobilenetv2)
-                    isInitialized = classificationSample.initializeClassification(classificationModel)
+                    isInitialized = classificationSample.initializeClassification(classificationModel, env = AiliaTFLite.AILIA_TFLITE_ENV_NNAPI)
                 }
                 AlgorithmType.TOKENIZE -> {
                     isInitialized = tokenizerSample.initializeTokenizer()
                 }
                 AlgorithmType.TRACKING -> {
-                    isInitialized = trackerSample.initializeTracker()
+                    val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_tiny)
+                    if (objectDetectionSample.initializeObjectDetection(yoloxModel, env = AiliaTFLite.AILIA_TFLITE_ENV_NNAPI)) {
+                        isInitialized = trackerSample.initializeTracker()
+                    }
                 }
             }
             
@@ -491,7 +494,22 @@ class MainActivity : AppCompatActivity() {
             Log.e("AILIA_Error", "Error stopping camera: ${e.message}")
         }
     }
-    
+
+    fun cropToSquare(bitmap: Bitmap): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+
+        // 正方形のサイズは、元のBitmapの幅と高さのうち小さい方に合わせます
+        val newSize = if (width < height) width else height
+
+        // 中央を基準にクロップするための開始XとYを計算します
+        val startX = (width - newSize) / 2
+        val startY = (height - newSize) / 2
+
+        // Bitmapをクロップして正方形の新しいBitmapを作成します
+        return Bitmap.createBitmap(bitmap, startX, startY, newSize, newSize)
+    }
+
     private inner class CameraFrameAnalyzer : ImageAnalysis.Analyzer {
         override fun analyze(image: ImageProxy) {
             if (isInitialized) {
@@ -508,11 +526,15 @@ class MainActivity : AppCompatActivity() {
             isProcessing.set(true)
             
             try {
-                val bitmap = imageProxyToBitmap(image)
+                var bitmap = imageProxyToBitmap(image)
+                bitmap = cropToSquare(bitmap)
+
                 val img = loadRawImage(bitmap)
                 val w = bitmap.width
                 val h = bitmap.height
-                
+
+                Log.i("AILIA_Main", "${w} ${h}")
+
                 val resultBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                 val canvas = Canvas(resultBitmap)
                 canvas.drawBitmap(bitmap, 0f, 0f, null)
@@ -520,6 +542,10 @@ class MainActivity : AppCompatActivity() {
                 val processingTime = processAlgorithm(img, bitmap, canvas, w, h)
                 
                 runOnUiThread {
+                    if (currentAlgorithm != AlgorithmType.TOKENIZE) {
+                        imageView.setImageBitmap(bitmap)
+                    }
+
                     val fps = if (processingTime > 0) 1000 / processingTime else 0
                     processingTimeTextView.text = "Processing Time: ${processingTime}ms (${currentAlgorithm.name}) - FPS: $fps"
                 }
