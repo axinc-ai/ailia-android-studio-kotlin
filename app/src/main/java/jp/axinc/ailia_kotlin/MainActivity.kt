@@ -548,7 +548,7 @@ class MainActivity : AppCompatActivity() {
     
     private fun imageProxyToBitmap(image: ImageProxy): Bitmap {
         val yBuffer = image.planes[0].buffer // Y
-        val uBuffer = image.planes[1].buffer // U
+        val uBuffer = image.planes[1].buffer // U  
         val vBuffer = image.planes[2].buffer // V
 
         val ySize = yBuffer.remaining()
@@ -557,16 +557,41 @@ class MainActivity : AppCompatActivity() {
 
         val nv21 = ByteArray(ySize + uSize + vSize)
 
-        // U and V are swapped
+        // Copy Y plane
         yBuffer.get(nv21, 0, ySize)
-        vBuffer.get(nv21, ySize, vSize)
-        uBuffer.get(nv21, ySize + vSize, uSize)
+        
+        // For NV21 format, we need V and U interleaved (VUVUVU...)
+        // But YUV420_888 has separate U and V planes
+        val uvPixelStride = image.planes[1].pixelStride
+        if (uvPixelStride == 1) {
+            // Planes are already packed, copy directly
+            uBuffer.get(nv21, ySize, uSize)
+            vBuffer.get(nv21, ySize + uSize, vSize)
+        } else {
+            // Planes are not packed, need to interleave U and V
+            val uvBuffer = ByteArray(uSize)
+            val vvBuffer = ByteArray(vSize)
+            uBuffer.get(uvBuffer)
+            vBuffer.get(vvBuffer)
+            
+            // Interleave V and U for NV21 format
+            var uvIndex = ySize
+            for (i in 0 until minOf(uvBuffer.size, vvBuffer.size)) {
+                nv21[uvIndex++] = vvBuffer[i] // V first
+                nv21[uvIndex++] = uvBuffer[i] // U second
+            }
+        }
 
         val yuvImage = android.graphics.YuvImage(nv21, android.graphics.ImageFormat.NV21, image.width, image.height, null)
         val out = java.io.ByteArrayOutputStream()
-        yuvImage.compressToJpeg(android.graphics.Rect(0, 0, yuvImage.width, yuvImage.height), 50, out)
+        yuvImage.compressToJpeg(android.graphics.Rect(0, 0, yuvImage.width, yuvImage.height), 90, out)
         val imageBytes = out.toByteArray()
-        return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+        val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+        
+        // Handle camera rotation - most back cameras need 90 degree rotation
+        val matrix = android.graphics.Matrix()
+        matrix.postRotate(90f)
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
     }
     
     private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
