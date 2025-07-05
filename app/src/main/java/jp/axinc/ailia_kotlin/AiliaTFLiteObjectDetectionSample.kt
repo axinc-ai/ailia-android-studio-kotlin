@@ -240,7 +240,7 @@ class AiliaTFLiteObjectDetectionSample {
         val numElements = 5 + CocoAndImageNetLabels.COCO_CATEGORY.size
         if (numCells != outputShape[1] || numElements != outputShape[2]) {
             Log.e(TAG, "Error! YOLOX output_shape[1,2] mismatch")
-            return
+            return mutableListOf<AiliaTrackerSample.DetectionResult>()
         }
 
         val boxes = mutableListOf<RectF>()
