@@ -25,6 +25,8 @@ import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import android.graphics.ImageFormat;
+import android.graphics.YuvImage;
 
 class MainActivity : AppCompatActivity() {
     private lateinit var cameraExecutor: ExecutorService
@@ -571,55 +573,99 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-    
+
     private fun imageProxyToBitmap(image: ImageProxy): Bitmap {
-        val yBuffer = image.planes[0].buffer // Y
-        val uBuffer = image.planes[1].buffer // U  
-        val vBuffer = image.planes[2].buffer // V
-
-        val ySize = yBuffer.remaining()
-        val uSize = uBuffer.remaining()
-        val vSize = vBuffer.remaining()
-
-        val nv21 = ByteArray(ySize + uSize + vSize)
-
-        // Copy Y plane
-        yBuffer.get(nv21, 0, ySize)
-        
-        // For NV21 format, we need V and U interleaved (VUVUVU...)
-        // But YUV420_888 has separate U and V planes
-        val uvPixelStride = image.planes[1].pixelStride
-        if (uvPixelStride == 1) {
-            // Planes are already packed, copy directly
-            uBuffer.get(nv21, ySize, uSize)
-            vBuffer.get(nv21, ySize + uSize, vSize)
-        } else {
-            // Planes are not packed, need to interleave U and V
-            val uvBuffer = ByteArray(uSize)
-            val vvBuffer = ByteArray(vSize)
-            uBuffer.get(uvBuffer)
-            vBuffer.get(vvBuffer)
-            
-            // Interleave V and U for NV21 format
-            var uvIndex = ySize
-            for (i in 0 until minOf(uvBuffer.size, vvBuffer.size)) {
-                nv21[uvIndex++] = vvBuffer[i] // V first
-                nv21[uvIndex++] = uvBuffer[i] // U second
-            }
-        }
-
-        val yuvImage = android.graphics.YuvImage(nv21, android.graphics.ImageFormat.NV21, image.width, image.height, null)
-        val out = java.io.ByteArrayOutputStream()
-        yuvImage.compressToJpeg(android.graphics.Rect(0, 0, yuvImage.width, yuvImage.height), 90, out)
-        val imageBytes = out.toByteArray()
-        val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-        
-        // Handle camera rotation - most back cameras need 90 degree rotation
+        val width = image.getWidth()
+        val height = image.getHeight()
+        val nv21 = yuv420888ToNv21(image)
+        val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
+        val out = ByteArrayOutputStream()
+        yuvImage.compressToJpeg(android.graphics.Rect(0, 0, width, height), 100, out)
+        val imageBytes: ByteArray = out.toByteArray()
+        val bitmap: Bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
         val matrix = android.graphics.Matrix()
         matrix.postRotate(90f)
         return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
     }
-    
+
+    private fun yuv420888ToNv21(image: ImageProxy): ByteArray {
+        val pixelCount = image.cropRect.width() * image.cropRect.height()
+        val pixelSizeBits = ImageFormat.getBitsPerPixel(ImageFormat.YUV_420_888)
+        val outputBuffer = ByteArray(pixelCount * pixelSizeBits / 8)
+        imageToByteBuffer(image, outputBuffer, pixelCount)
+        return outputBuffer
+    }
+
+    private fun imageToByteBuffer(image: ImageProxy, outputBuffer: ByteArray, pixelCount: Int) {
+        assert(image.format == ImageFormat.YUV_420_888)
+
+        val imageCrop = image.cropRect
+        val imagePlanes = image.planes
+
+        imagePlanes.forEachIndexed { planeIndex, plane ->
+            val outputStride: Int
+            var outputOffset: Int
+
+            when (planeIndex) {
+                0 -> {
+                    outputStride = 1
+                    outputOffset = 0
+                }
+                1 -> {
+                    outputStride = 2
+                    outputOffset = pixelCount + 1
+                }
+                2 -> {
+                    outputStride = 2
+                    outputOffset = pixelCount
+                }
+                else -> {
+                    return@forEachIndexed
+                }
+            }
+
+            val planeBuffer = plane.buffer
+            val rowStride = plane.rowStride
+            val pixelStride = plane.pixelStride
+            val planeCrop = if (planeIndex == 0) {
+                imageCrop
+            } else {
+                android.graphics.Rect(
+                    imageCrop.left / 2,
+                    imageCrop.top / 2,
+                    imageCrop.right / 2,
+                    imageCrop.bottom / 2
+                )
+            }
+
+            val planeWidth = planeCrop.width()
+            val planeHeight = planeCrop.height()
+            val rowBuffer = ByteArray(plane.rowStride)
+
+            val rowLength = if (pixelStride == 1 && outputStride == 1) {
+                planeWidth
+            } else {
+                (planeWidth - 1) * pixelStride + 1
+            }
+
+            for (row in 0 until planeHeight) {
+                planeBuffer.position(
+                    (row + planeCrop.top) * rowStride + planeCrop.left * pixelStride)
+
+                if (pixelStride == 1 && outputStride == 1) {
+                    planeBuffer.get(outputBuffer, outputOffset, rowLength)
+                    outputOffset += rowLength
+                } else {
+                    planeBuffer.get(rowBuffer, 0, rowLength)
+                    for (col in 0 until planeWidth) {
+                        outputBuffer[outputOffset] = rowBuffer[col * pixelStride]
+                        outputOffset += outputStride
+                    }
+                }
+            }
+        }
+    }
+
     private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
         ContextCompat.checkSelfPermission(baseContext, it) == PackageManager.PERMISSION_GRANTED
     }
