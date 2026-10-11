@@ -65,6 +65,8 @@ class AiliaMultimodalLLMSample(
     private var projectorPath: String? = null
     private var sampleMediaPath: String? = null
     private val conversationHistory = mutableListOf<AiliaLLMMultimodalChatMessage>()
+    /** 会話履歴にメディアを送ったか。メディアは会話の最初の質問だけで送る。 */
+    private var mediaSent = false
     private val cancelRequested = AtomicBoolean(false)
 
     /** 実行バックエンド。QNNは対応SoCの場合のみ選択できる。 */
@@ -200,6 +202,7 @@ class AiliaMultimodalLLMSample(
 
             // Add system prompt
             conversationHistory.clear()
+            mediaSent = false
             conversationHistory.add(AiliaLLMMultimodalChatMessage("system", mediaType.systemPrompt))
 
             isInitialized = true
@@ -298,24 +301,32 @@ class AiliaMultimodalLLMSample(
             lastPerformance = null
             val startTime = System.nanoTime()
 
-            // Create media data for the image or audio
-            Log.i(TAG, "chatWithMedia: creating media data for: $mediaToUse")
-            val mediaData = AiliaLLMMediaData(mediaType.mediaType, mediaToUse)
-
-            // Create user message with media placeholder
-            // The <__media__> placeholder will be replaced with the image or audio
-            val messageContent = "<__media__>\n$userInput"
-            val userMessage = AiliaLLMMultimodalChatMessage("user", messageContent, mediaData)
+            // メディアを毎ターン履歴に積むとエンコード時間とコンテキストが増えるため、
+            // 最初の質問だけメディアを送り、以降はテキストだけを送る。
+            // 入力を切り替えた場合は呼び出し側でclearHistory()して送り直す
+            val attachMedia = !mediaSent
+            val userMessage = if (attachMedia) {
+                Log.i(TAG, "chatWithMedia: attaching ${mediaType.mediaType}: $mediaToUse")
+                val mediaData = AiliaLLMMediaData(mediaType.mediaType, mediaToUse)
+                // The <__media__> placeholder will be replaced with the image or audio
+                AiliaLLMMultimodalChatMessage("user", "<__media__>\n$userInput", mediaData)
+            } else {
+                Log.i(TAG, "chatWithMedia: ${mediaType.mediaType} already sent, sending text only")
+                AiliaLLMMultimodalChatMessage("user", userInput)
+            }
             conversationHistory.add(userMessage)
 
             // Set the multimodal prompt (media encoding takes a while on mobile CPUs)
             Log.i(TAG, "chatWithMedia: calling setPrompt with ${conversationHistory.size} messages...")
-            listener?.onStatus("Processing ${mediaType.mediaType}...")
+            if (attachMedia) listener?.onStatus("Processing ${mediaType.mediaType}...")
             val promptStart = System.nanoTime()
             llm!!.setPrompt(conversationHistory.toTypedArray())
             val promptTime = (System.nanoTime() - promptStart) / 1000000
             Log.i(TAG, "chatWithMedia: setPrompt completed in ${promptTime}ms")
-            listener?.onStatus("Generating... (${mediaType.mediaType} processed in ${promptTime / 1000}s)")
+            listener?.onStatus(
+                if (attachMedia) "Generating... (${mediaType.mediaType} processed in ${promptTime / 1000}s)"
+                else "Generating..."
+            )
 
             // Generate response token by token
             val responseBuilder = StringBuilder()
@@ -362,6 +373,8 @@ class AiliaMultimodalLLMSample(
 
             // Add assistant response to conversation history
             conversationHistory.add(AiliaLLMMultimodalChatMessage("assistant", fullResponse))
+            // 失敗時はユーザー発言ごと履歴から外すため、成功したときだけ送信済みとして記録する
+            mediaSent = true
 
             val endTime = System.nanoTime()
             val processingTime = (endTime - startTime) / 1000000
@@ -412,6 +425,7 @@ class AiliaMultimodalLLMSample(
     fun clearHistory() {
         conversationHistory.clear()
         conversationHistory.add(AiliaLLMMultimodalChatMessage("system", mediaType.systemPrompt))
+        mediaSent = false
         Log.i(TAG, "Conversation history cleared")
     }
 
@@ -439,6 +453,7 @@ class AiliaMultimodalLLMSample(
             projectorPath = null
             sampleMediaPath = null
             conversationHistory.clear()
+            mediaSent = false
             Log.i(TAG, "Multimodal LLM released")
         }
     }

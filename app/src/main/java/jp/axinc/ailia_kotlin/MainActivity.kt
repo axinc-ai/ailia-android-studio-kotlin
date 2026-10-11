@@ -191,6 +191,13 @@ class MainActivity : AppCompatActivity() {
      * QNN版のあるモデルに戻したときはこの選択に戻す。
      */
     private var preferredLLMBackend: LLMBackend = LLMBackend.QNN
+    /** MTPスイッチの既定値を適用したバックエンド。バックエンドが変わったときだけ既定値に戻す。 */
+    private var mtpDefaultBackend: LLMBackend? = null
+
+    /** MTPのON/OFFを変えたらモデルを開き直す(Assistantは後から外せないため)。 */
+    private val llmMtpSwitchListener =
+        android.widget.CompoundButton.OnCheckedChangeListener { _, _ -> releaseLLMSamples() }
+
     /** 生成中かどうか。生成中はSendボタンをStopボタンとして使う。 */
     private var llmGenerating = false
 
@@ -357,7 +364,7 @@ class MainActivity : AppCompatActivity() {
         llmInputBar = findViewById(R.id.llmInputBar)
         toolUseThinkingSwitch = findViewById(R.id.toolUseThinkingSwitch)
         llmMtpSwitch = findViewById(R.id.llmMtpSwitch)
-        llmMtpSwitch.setOnCheckedChangeListener { _, _ -> releaseLLMSamples() }
+        llmMtpSwitch.setOnCheckedChangeListener(llmMtpSwitchListener)
         almInputModeRadioGroup = findViewById(R.id.almInputModeRadioGroup)
         almWavRadioButton = findViewById(R.id.almWavRadioButton)
         almMicRadioButton = findViewById(R.id.almMicRadioButton)
@@ -857,6 +864,7 @@ class MainActivity : AppCompatActivity() {
         }
         // 希望のバックエンドが使えないモデル(QNN版のないE4Bなど)ではCPUを自動で選ぶ
         selectedLLMBackend = if (preferredLLMBackend in backends) preferredLLMBackend else backends.first()
+        applyMtpDefault(selectedLLMBackend)
         val items = backends.map { backend ->
             when (backend) {
                 // 使用するモデルファイルが分かるようにSoC名を併記する
@@ -876,12 +884,27 @@ class MainActivity : AppCompatActivity() {
                 if (newBackend != selectedLLMBackend) {
                     selectedLLMBackend = newBackend
                     preferredLLMBackend = newBackend
+                    applyMtpDefault(newBackend)
                     // バックエンド切り替え時は解放のみ(ダウンロードはSend押下時)
                     releaseLLMSamples()
                 }
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
+    }
+
+    /**
+     * バックエンドに応じてMTPスイッチを既定値にする。
+     * MTPはNPU(QNN)では高速化の効果が大きいが、モバイルCPUでは遅くなる場合があるため、QNNのみ既定でONにする。
+     * 同じバックエンドのままならユーザーが選んだ状態を保つ。
+     */
+    private fun applyMtpDefault(backend: LLMBackend) {
+        if (backend == mtpDefaultBackend) return
+        mtpDefaultBackend = backend
+        // 既定値の適用ではモデルを解放しない(バックエンド切り替え側で解放する)
+        llmMtpSwitch.setOnCheckedChangeListener(null)
+        llmMtpSwitch.isChecked = backend == LLMBackend.QNN
+        llmMtpSwitch.setOnCheckedChangeListener(llmMtpSwitchListener)
     }
 
     /**
@@ -1594,6 +1617,8 @@ class MainActivity : AppCompatActivity() {
     private fun executeModeSwitch(modeId: Int) {
         // モード切り替え時はRun押下からやり直す
         resetRunState()
+        // VLMは最初の質問だけ画像を送るため、画像とカメラを切り替えたら会話をやり直す
+        if (currentAlgorithm == AlgorithmType.MULTIMODAL_LLM) resetMultimodalChat(multimodalLLMSample)
         when (modeId) {
             R.id.imageRadioButton -> {
                 updateUIVisibility()
@@ -1951,6 +1976,16 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.TOOL_USE -> toolUseSample.cancelGeneration()
             else -> {}
         }
+    }
+
+    /**
+     * VLM / ALMの会話履歴とチャット表示をリセットする。
+     * メディアは会話の最初の質問だけで送るため、次の質問で新しい入力を送り直す。
+     */
+    private fun resetMultimodalChat(sample: AiliaMultimodalLLMSample) {
+        sample.clearHistory()
+        llmChatContainer.removeAllViews()
+        llmStatusTextView.text = "Status: Press Send to run"
     }
 
     /** VLM / ALMの完了時のステータス。MTPの有無とTTFT / TPSを表示する。 */
@@ -2521,6 +2556,8 @@ class MainActivity : AppCompatActivity() {
             if (almRecorder.isRecording) almRecorder.cancelRecording()
             almAudioPath = null
             almWaveformView.clear()
+            // ALMは最初の質問だけ音声を送るため、WavとMicを切り替えたら会話をやり直す
+            resetMultimodalChat(almSample)
             updateAlmInputVisibility()
         }
 
@@ -2609,7 +2646,8 @@ class MainActivity : AppCompatActivity() {
                         almAudioPath = file.absolutePath
                         almWaveformView.showAudio(audio)
                         updateAlmInputVisibility()
-                        llmStatusTextView.text = "Status: Press Send to run"
+                        // 新しい録音は次の質問で送り直すため、会話をやり直す
+                        resetMultimodalChat(almSample)
                     }
                 }
 

@@ -180,7 +180,7 @@
                 android:layout_marginBottom="8dp"
                 android:visibility="gone" />
 
-            <!-- LLM/VLM/ALM/ToolUseでMTP(Multi-Token Prediction)を使うか。既定はON -->
+            <!-- LLM/VLM/ALM/ToolUseでMTP(Multi-Token Prediction)を使うか。既定はQNNのみON(MainActivityで設定) -->
             <androidx.appcompat.widget.SwitchCompat
                 android:id="@+id/llmMtpSwitch"
                 android:layout_width="match_parent"
