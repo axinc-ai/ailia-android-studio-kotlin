@@ -2683,6 +2683,7 @@ class MainActivity : AppCompatActivity() {
         val assistantBubble = addChatBubble("", isUser = false)
         // Statusは吹き出しの下にあるため、送信直後にも一番下までスクロールして見えるようにする
         scrollResultToBottom()
+        llmInputEditText.setText("")
 
         cameraExecutor.execute {
             try {
