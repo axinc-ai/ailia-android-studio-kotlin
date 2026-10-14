@@ -14,16 +14,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * マルチモーダル入力の種類。
  * VLM(画像)とALM(音声)で同じGemma 4 E2B + mmprojを使い、入力メディアのみが異なる。
+ *
+ * @property mediaBeforeText メディアを質問より前に置くか。Gemma 4のモデルカードの推奨
+ *   (画像はテキストの前、音声はテキストの後)に従う。
  */
-enum class MultimodalMediaType(val mediaType: String, val systemPrompt: String) {
-    IMAGE(
-        "image",
-        "You are a helpful assistant that can understand images. Describe images briefly and concisely.",
-    ),
-    AUDIO(
-        "audio",
-        "You are a helpful assistant that can understand audio. Describe audio briefly and concisely.",
-    ),
+enum class MultimodalMediaType(val mediaType: String, val mediaBeforeText: Boolean) {
+    IMAGE("image", mediaBeforeText = true),
+    AUDIO("audio", mediaBeforeText = false),
 }
 
 /**
@@ -200,10 +197,9 @@ class AiliaMultimodalLLMSample(
                 return false
             }
 
-            // Add system prompt
+            // システムプロンプトは設定しない(「説明せよ」などの指示が最初の質問より優先されるため)
             conversationHistory.clear()
             mediaSent = false
-            conversationHistory.add(AiliaLLMMultimodalChatMessage("system", mediaType.systemPrompt))
 
             isInitialized = true
             Log.i(TAG, "Multimodal LLM initialized successfully. Context size: ${llm!!.getContextSize()}")
@@ -309,7 +305,12 @@ class AiliaMultimodalLLMSample(
                 Log.i(TAG, "chatWithMedia: attaching ${mediaType.mediaType}: $mediaToUse")
                 val mediaData = AiliaLLMMediaData(mediaType.mediaType, mediaToUse)
                 // The <__media__> placeholder will be replaced with the image or audio
-                AiliaLLMMultimodalChatMessage("user", "<__media__>\n$userInput", mediaData)
+                val content = if (mediaType.mediaBeforeText) {
+                    "<__media__>\n$userInput"
+                } else {
+                    "$userInput\n<__media__>"
+                }
+                AiliaLLMMultimodalChatMessage("user", content, mediaData)
             } else {
                 Log.i(TAG, "chatWithMedia: ${mediaType.mediaType} already sent, sending text only")
                 AiliaLLMMultimodalChatMessage("user", userInput)
@@ -424,7 +425,6 @@ class AiliaMultimodalLLMSample(
      */
     fun clearHistory() {
         conversationHistory.clear()
-        conversationHistory.add(AiliaLLMMultimodalChatMessage("system", mediaType.systemPrompt))
         mediaSent = false
         Log.i(TAG, "Conversation history cleared")
     }
