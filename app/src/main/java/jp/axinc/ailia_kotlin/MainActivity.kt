@@ -170,6 +170,12 @@ class MainActivity : AppCompatActivity() {
     private var camera: Camera? = null
     private var latestCameraBitmap: Bitmap? = null
 
+    /**
+     * VLMのカメラ入力で、チャット開始時のフレームに固定しているか。
+     * 固定中はカメラ映像を更新せず、ImageとCameraを切り替えると解除して更新を再開する。
+     */
+    private var vlmCameraFrameFrozen = false
+
     // カメラ選択(リストボックスで切り替え)
     private data class CameraChoice(val name: String, val selector: CameraSelector)
     private val cameraChoices = listOf(
@@ -406,6 +412,7 @@ class MainActivity : AppCompatActivity() {
         voiceWaveformView = findViewById(R.id.voiceWaveformView)
         modelSpinner = findViewById(R.id.modelSpinner)
         rootScrollView = findViewById(R.id.rootScrollView)
+        setupFollowScroll()
         visionRunButton = findViewById(R.id.visionRunButton)
         speakerProfileLabel = findViewById(R.id.speakerProfileLabel)
         speakerProfileSpinner = findViewById(R.id.speakerProfileSpinner)
@@ -546,6 +553,7 @@ class MainActivity : AppCompatActivity() {
         // 切り替え前に開始したカメラ推論のUI反映も無効化する。
         visionDisplayGeneration.incrementAndGet()
         latestCameraBitmap = null
+        vlmCameraFrameFrozen = false
         processingTimeTextView.text = "Processing Time: -- ms"
         // Speech2Textでは同じTextViewをSpeech Resultとして使うため表記を切り替える。
         classificationResultTextView.text = if (currentAlgorithm == AlgorithmType.SPEECH_TO_TEXT) {
@@ -1418,6 +1426,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateUIVisibility() {
+        // 画面を切り替えたら、前の画面でスクロールを止めていても追随し直す
+        followScrollToBottom = true
         val isCameraMode = modeRadioGroup.checkedRadioButtonId == R.id.cameraRadioButton
         val visibleViews = visibleViewsByAlgorithm(isCameraMode).getValue(currentAlgorithm)
         managedAlgorithmViews().forEach { view ->
@@ -1645,6 +1655,8 @@ class MainActivity : AppCompatActivity() {
     private fun executeModeSwitch(modeId: Int) {
         // モード切り替え時はRun押下からやり直す
         resetRunState()
+        // VLMのカメラ映像の固定を解除し、Cameraに戻したときに更新を再開する
+        vlmCameraFrameFrozen = false
         // VLMは最初の質問だけ画像を送るため、画像とカメラを切り替えたら会話をやり直す
         if (currentAlgorithm == AlgorithmType.MULTIMODAL_LLM) resetMultimodalChat(multimodalLLMSample)
         when (modeId) {
@@ -1921,8 +1933,57 @@ class MainActivity : AppCompatActivity() {
         return bubble
     }
 
+    /**
+     * 一番下まで自動でスクロールするか。生成中にユーザーが上へスクロールしたら止め、
+     * 一番下まで戻したら再開する。送信時と画面切り替え時は再び追随させる。
+     */
+    private var followScrollToBottom = true
+
+    /** 自動スクロールの追随をやめる「一番下」からの距離。 */
+    private val followScrollThresholdPx by lazy { (32 * resources.displayMetrics.density).toInt() }
+
+    /** 一番下へのスクロールを次の描画前に予約済みか。トークンごとに予約が積み重ならないようにする。 */
+    private var scrollToBottomPending = false
+
+    /** 追随中なら一番下までスクロールする。 */
     private fun scrollResultToBottom() {
-        rootScrollView.post { rootScrollView.fullScroll(View.FOCUS_DOWN) }
+        if (!followScrollToBottom || scrollToBottomPending) return
+        scrollToBottomPending = true
+        // 追加したテキストのレイアウトが終わってから移動しないと、一番下に届かず
+        // ユーザーが上へスクロールしたと誤判定するため、描画の直前に移動する
+        rootScrollView.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                rootScrollView.viewTreeObserver.removeOnPreDrawListener(this)
+                scrollToBottomPending = false
+                if (!followScrollToBottom) return true
+                // fullScrollはスムーズスクロールになり、途中の位置をユーザー操作と区別できないため一度に移動する
+                val content = rootScrollView.getChildAt(0) ?: return true
+                val bottom = content.bottom + rootScrollView.paddingBottom - rootScrollView.height
+                rootScrollView.scrollTo(0, bottom.coerceAtLeast(0))
+                return true
+            }
+        })
+        rootScrollView.invalidate()
+    }
+
+    /** 追随を再開して一番下までスクロールする。送信時など、新しい出力を見せたいときに使う。 */
+    private fun startFollowingScroll() {
+        followScrollToBottom = true
+        scrollResultToBottom()
+    }
+
+    /**
+     * スクロール位置が変わったら、一番下付近にいるかで追随の有無を決める。
+     * トークンの追加では位置が変わらず、自動スクロールは一番下へ一度に移動するため、
+     * 一番下から離れるのはユーザーが上へスクロールしたときだけになる。
+     */
+    private fun setupFollowScroll() {
+        rootScrollView.viewTreeObserver.addOnScrollChangedListener {
+            val content = rootScrollView.getChildAt(0) ?: return@addOnScrollChangedListener
+            val distanceToBottom = content.bottom + rootScrollView.paddingBottom -
+                (rootScrollView.scrollY + rootScrollView.height)
+            followScrollToBottom = distanceToBottom <= followScrollThresholdPx
+        }
     }
 
     /** モデルダウンロードの進捗を画面下部の共通ProgressBarへ表示する。 */
@@ -2022,6 +2083,15 @@ class MainActivity : AppCompatActivity() {
         sample.clearHistory()
         llmChatContainer.removeAllViews()
         llmStatusTextView.text = "Status: Press Send to run"
+    }
+
+    /**
+     * VLMのカメラ映像をチャット開始時のフレームで止める。
+     * カメラを止めるとプレビューは最後のフレームのまま残り、Image/Cameraの切り替えでstartCameraし直す。
+     */
+    private fun freezeVlmCameraFrame() {
+        vlmCameraFrameFrozen = true
+        stopCamera()
     }
 
     /** VLM / ALMの完了時のステータス。MTPの有無とTTFT / TPSを表示する。 */
@@ -2159,7 +2229,7 @@ class MainActivity : AppCompatActivity() {
         addChatBubble(userInput, isUser = true)
         val assistantBubble = addChatBubble("", isUser = false)
         // Statusは吹き出しの下にあるため、送信直後にも一番下までスクロールして見えるようにする
-        scrollResultToBottom()
+        startFollowingScroll()
         llmInputEditText.setText("")
 
         cameraExecutor.execute {
@@ -2294,7 +2364,7 @@ class MainActivity : AppCompatActivity() {
         addChatBubble(userInput, isUser = true)
         // UIスレッドからのみ参照する。ツール実行後のターンでは新しい吹き出しに差し替える。
         var assistantBubble = addChatBubble("", isUser = false)
-        scrollResultToBottom()
+        startFollowingScroll()
         llmInputEditText.setText("")
 
         cameraExecutor.execute {
@@ -2469,10 +2539,14 @@ class MainActivity : AppCompatActivity() {
             addChatBubble(userInput, isUser = true)
             val assistantBubble = addChatBubble("", isUser = false)
         // Statusは吹き出しの下にあるため、送信直後にも一番下までスクロールして見えるようにする
-        scrollResultToBottom()
+        startFollowingScroll()
             llmInputEditText.setText("")
 
             val isCameraMode = modeRadioGroup.checkedRadioButtonId == R.id.cameraRadioButton
+            // チャットを始めたときのカメラ映像で確定し、以降はImage/Cameraを切り替えるまで更新しない
+            if (isCameraMode && !vlmCameraFrameFrozen && latestCameraBitmap != null) {
+                freezeVlmCameraFrame()
+            }
             val cameraFrame = if (isCameraMode) latestCameraBitmap?.copy(Bitmap.Config.ARGB_8888, false) else null
 
             cameraExecutor.execute {
@@ -2718,7 +2792,7 @@ class MainActivity : AppCompatActivity() {
         addChatBubble(userInput, isUser = true)
         val assistantBubble = addChatBubble("", isUser = false)
         // Statusは吹き出しの下にあるため、送信直後にも一番下までスクロールして見えるようにする
-        scrollResultToBottom()
+        startFollowingScroll()
         llmInputEditText.setText("")
 
         cameraExecutor.execute {
@@ -4567,8 +4641,11 @@ class MainActivity : AppCompatActivity() {
                         return@runOnUiThreadIfActive
                     }
                     if (currentAlgorithm == AlgorithmType.MULTIMODAL_LLM) {
-                        latestCameraBitmap = camera_bitmap
-                        multimodalImageView.setImageBitmap(camera_bitmap)
+                        // チャット開始時のフレームに固定している間は更新しない
+                        if (!vlmCameraFrameFrozen) {
+                            latestCameraBitmap = camera_bitmap
+                            multimodalImageView.setImageBitmap(camera_bitmap)
+                        }
                     } else if (currentAlgorithm != AlgorithmType.TOKENIZE) {
                         imageView.setImageBitmap(bitmap)
                     }
