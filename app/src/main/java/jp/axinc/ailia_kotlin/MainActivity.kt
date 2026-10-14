@@ -69,6 +69,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var llmInputBar: LinearLayout
     private lateinit var toolUseThinkingSwitch: SwitchCompat
     private lateinit var llmMtpSwitch: SwitchCompat
+    private lateinit var settingsDebugLabel: TextView
+    private lateinit var settingsQnnFormatLabel: TextView
+    private lateinit var settingsQnnFormatRadioGroup: RadioGroup
+    private lateinit var settingsQnnFormatNoteTextView: TextView
     private lateinit var almInputModeRadioGroup: RadioGroup
     private lateinit var almWavRadioButton: RadioButton
     private lateinit var almMicRadioButton: RadioButton
@@ -264,6 +268,7 @@ class MainActivity : AppCompatActivity() {
         TOOL_USE,
         SPEAKER_VERIFICATION,
         VOICE_FILTER,
+        SETTINGS,
     }
 
     companion object {
@@ -359,6 +364,27 @@ class MainActivity : AppCompatActivity() {
         llmMtpSwitch = findViewById(R.id.llmMtpSwitch)
         // MTPのON/OFFを変えたらモデルを開き直す(Assistantは後から外せないため)
         llmMtpSwitch.setOnCheckedChangeListener { _, _ -> releaseLLMSamples() }
+        settingsDebugLabel = findViewById(R.id.settingsDebugLabel)
+        settingsQnnFormatLabel = findViewById(R.id.settingsQnnFormatLabel)
+        settingsQnnFormatRadioGroup = findViewById(R.id.settingsQnnFormatRadioGroup)
+        settingsQnnFormatNoteTextView = findViewById(R.id.settingsQnnFormatNoteTextView)
+        settingsQnnFormatRadioGroup.setOnCheckedChangeListener { _, checkedId ->
+            // QNNモデルのフォーマットはメモリ上だけで保持し、再起動でv1.5.1に戻す
+            val format = if (checkedId == R.id.settingsQnnFormatV150RadioButton) {
+                QnnSupport.QnnModelFormat.V1_5_0
+            } else {
+                QnnSupport.QnnModelFormat.V1_5_1
+            }
+            if (format != QnnSupport.modelFormat) {
+                QnnSupport.modelFormat = format
+                Log.i("AILIA_Main", "QNN model format: ${format.displayName}")
+                // 読み込むファイルが変わるため、開いているLLMを解放して次のSend押下時に開き直す
+                llmSample.release()
+                multimodalLLMSample.release()
+                almSample.release()
+                toolUseSample.release()
+            }
+        }
         almInputModeRadioGroup = findViewById(R.id.almInputModeRadioGroup)
         almWavRadioButton = findViewById(R.id.almWavRadioButton)
         almMicRadioButton = findViewById(R.id.almMicRadioButton)
@@ -416,6 +442,7 @@ class MainActivity : AppCompatActivity() {
             "ToolUse",
             "SpeakerVerification",
             "VoiceFilter",
+            "Settings",
         )
 
         // 全体メニュー風の見た目にするため専用のitemレイアウト(白太字・中央寄せ)を使う
@@ -823,6 +850,7 @@ class MainActivity : AppCompatActivity() {
                 selectedRuntime = "ONNX"
                 arrayOf("VoiceFilter + dynamic d-vector embedder + Silero VAD v6")
             }
+            AlgorithmType.SETTINGS -> arrayOf("Settings")
         }
 
         val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, items)
@@ -861,7 +889,12 @@ class MainActivity : AppCompatActivity() {
         val items = backends.map { backend ->
             when (backend) {
                 // 使用するモデルファイルが分かるようにSoC名を併記する
-                LLMBackend.QNN -> "${backend.displayName} ${QnnSupport.socName}"
+                LLMBackend.QNN -> {
+                    // 既定(v1.5.1)以外のフォーマットを選んでいる場合は分かるように併記する
+                    val format = QnnSupport.modelFormat
+                    val suffix = if (format != QnnSupport.QnnModelFormat.V1_5_1) " (${format.displayName})" else ""
+                    "${backend.displayName} ${QnnSupport.socName}$suffix"
+                }
                 else -> backend.displayName
             }
         }.toTypedArray()
@@ -1173,6 +1206,9 @@ class MainActivity : AppCompatActivity() {
                 // Speaker audio tools are handled asynchronously via their WAV/Mic controls.
                 0
             }
+
+            // Settings has no model to run.
+            AlgorithmType.SETTINGS -> 0
         }
     }
 
@@ -1198,6 +1234,10 @@ class MainActivity : AppCompatActivity() {
         llmStatusTextView,
         llmEnvSpinner,
         llmMtpSwitch,
+        settingsDebugLabel,
+        settingsQnnFormatLabel,
+        settingsQnnFormatRadioGroup,
+        settingsQnnFormatNoteTextView,
         toolUseThinkingSwitch,
         llmBenchmarkButton,
         almInputModeRadioGroup,
@@ -1367,6 +1407,13 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.TOOL_USE to llmViews + setOf<View>(toolUseThinkingSwitch),
             AlgorithmType.SPEAKER_VERIFICATION to speakerVerificationViews,
             AlgorithmType.VOICE_FILTER to voiceFilterViews,
+            AlgorithmType.SETTINGS to setOf<View>(
+                resultScrollView,
+                settingsDebugLabel,
+                settingsQnnFormatLabel,
+                settingsQnnFormatRadioGroup,
+                settingsQnnFormatNoteTextView,
+            ),
         )
     }
 
@@ -1382,7 +1429,10 @@ class MainActivity : AppCompatActivity() {
             currentAlgorithm == AlgorithmType.MULTIMODAL_LLM ||
             currentAlgorithm == AlgorithmType.ALM ||
             currentAlgorithm == AlgorithmType.TOOL_USE
-        processingTimeTextView.visibility = if (isChatAlgorithm) View.GONE else View.VISIBLE
+        val isSettings = currentAlgorithm == AlgorithmType.SETTINGS
+        processingTimeTextView.visibility = if (isChatAlgorithm || isSettings) View.GONE else View.VISIBLE
+        // Settingsは選ぶモデルがないため、モデル選択を隠す
+        modelSpinner.visibility = if (isSettings) View.GONE else View.VISIBLE
 
         // 表示切り替え時に必要なアルゴリズム固有の初期状態を設定する。
         when (currentAlgorithm) {
@@ -1825,6 +1875,11 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
 
+                AlgorithmType.SETTINGS -> {
+                    // 設定画面は読み込むモデルがない
+                    return
+                }
+
                 AlgorithmType.TEXT_TO_SPEECH -> {
                     // モデルダウンロードはGenerate押下時(setupVoiceGenerateButton)まで遅延する
                     return
@@ -1876,10 +1931,13 @@ class MainActivity : AppCompatActivity() {
         bytesDownloaded: Long = 0,
         totalBytes: Long = 0,
     ) {
+        // 進捗は画面下部にあり、VLMなどでは画面外に隠れるため、表示を始めたときだけ一番下までスクロールする
+        val startedShowing = modelDownloadProgressBar.visibility != View.VISIBLE
         modelDownloadProgressTextView.text =
             formatDownloadProgress(fileName, bytesDownloaded, totalBytes)
         modelDownloadProgressTextView.visibility = View.VISIBLE
         modelDownloadProgressBar.visibility = View.VISIBLE
+        if (startedShowing) scrollResultToBottom()
         if (totalBytes > 0) {
             modelDownloadProgressBar.isIndeterminate = false
             modelDownloadProgressBar.progress =

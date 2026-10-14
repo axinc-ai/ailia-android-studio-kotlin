@@ -70,6 +70,23 @@ object QnnSupport {
         "sm7635" to "int16",
     )
 
+    /**
+     * QNNモデル(.qnn)のフォーマット。設定画面のデバッグオプションで切り替える。
+     *
+     * @property supportsMtp MTPのAssistantを使えるか。v1.5.0の本体はAR-4を含まないためMTPに対応しない。
+     */
+    enum class QnnModelFormat(val displayName: String, val supportsMtp: Boolean) {
+        /** ailia LLM 1.5.1向けのMTP対応版 "<prefix>-<soc>-<precision>-mtp.qnn"。 */
+        V1_5_1("v1.5.1", supportsMtp = true),
+
+        /** ailia LLM 1.5.0向けの従来版 "<prefix>-<soc>.qnn"。新しいライブラリでの互換性検証用。 */
+        V1_5_0("v1.5.0", supportsMtp = false),
+    }
+
+    /** 使用するQNNモデルのフォーマット。永続化せず、アプリを再起動すると既定値に戻る。 */
+    @Volatile
+    var modelFormat: QnnModelFormat = QnnModelFormat.V1_5_1
+
     /** ailia LLMのAPIで取得したSoC名(例: "sm8475")。QNNを利用できない端末ではnull。 */
     val socName: String? by lazy {
         runCatching { AiliaLLM.getQNNModelName() }
@@ -97,7 +114,7 @@ object QnnSupport {
     fun llmQnnMmprojFileName(modelType: LLMModelType): String? =
         llmQnnFileName(socName, modelType, QnnLlmFile.MMPROJ)
 
-    /** MTPのAssistant(ドラフトモデル)のQNNモデルファイル名。 */
+    /** MTPのAssistant(ドラフトモデル)のQNNモデルファイル名。MTPに対応しないフォーマットではnull。 */
     fun llmQnnMtpAssistantFileName(modelType: LLMModelType): String? =
         llmQnnFileName(socName, modelType, QnnLlmFile.MTP_ASSISTANT)
 
@@ -108,21 +125,31 @@ object QnnSupport {
     internal fun isFp16SupportedSoc(soc: String?): Boolean =
         soc?.let { it !in FP16_UNSUPPORTED_SOCS } ?: true
 
-    /** SoC名を引数で受け取るファイル名生成本体。 */
+    /** SoC名とフォーマットを引数で受け取るファイル名生成本体。 */
     internal fun llmQnnFileName(
         soc: String?,
         modelType: LLMModelType,
         file: QnnLlmFile = QnnLlmFile.MODEL,
+        format: QnnModelFormat = modelFormat,
     ): String? {
         if (soc == null) return null
         val model = LLM_QNN_MODELS[modelType] ?: return null
         if (soc !in model.socs) return null
-        val precision = LLM_QNN_PRECISIONS[soc] ?: return null
         val prefix = model.filePrefix
-        return when (file) {
-            QnnLlmFile.MODEL -> "$prefix-$soc-$precision-mtp.qnn"
-            QnnLlmFile.MMPROJ -> "$prefix-$soc-mmproj.qnn"
-            QnnLlmFile.MTP_ASSISTANT -> "$prefix-$soc-$precision-mtp-assistant.qnn"
+        // mmprojはどちらのフォーマットでもv1.5.0のファイルを使う
+        if (file == QnnLlmFile.MMPROJ) return "$prefix-$soc-mmproj.qnn"
+        return when (format) {
+            QnnModelFormat.V1_5_0 -> when (file) {
+                QnnLlmFile.MODEL -> "$prefix-$soc.qnn"
+                else -> null
+            }
+            QnnModelFormat.V1_5_1 -> {
+                val precision = LLM_QNN_PRECISIONS[soc] ?: return null
+                when (file) {
+                    QnnLlmFile.MTP_ASSISTANT -> "$prefix-$soc-$precision-mtp-assistant.qnn"
+                    else -> "$prefix-$soc-$precision-mtp.qnn"
+                }
+            }
         }
     }
 

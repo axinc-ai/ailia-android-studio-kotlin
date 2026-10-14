@@ -61,6 +61,22 @@ class QnnSupportTest {
     }
 
     @Test
+    fun `v1_5_0 format uses the previous target model without an MTP assistant`() {
+        val format = QnnSupport.QnnModelFormat.V1_5_0
+        assertEquals(
+            "gemma4-e2b-sm8475.qnn",
+            QnnSupport.llmQnnFileName("sm8475", LLMModelType.GEMMA_4_E2B, format = format),
+        )
+        assertEquals(
+            "gemma4-e2b-sm8475-mmproj.qnn",
+            QnnSupport.llmQnnFileName("sm8475", LLMModelType.GEMMA_4_E2B, QnnSupport.QnnLlmFile.MMPROJ, format),
+        )
+        assertNull(
+            QnnSupport.llmQnnFileName("sm8475", LLMModelType.GEMMA_4_E2B, QnnSupport.QnnLlmFile.MTP_ASSISTANT, format),
+        )
+    }
+
+    @Test
     fun `Gemma 4 E4B runs on QNN only on sm7635`() {
         assertEquals(
             "gemma4-e4b-sm7635-int16-mtp.qnn",
