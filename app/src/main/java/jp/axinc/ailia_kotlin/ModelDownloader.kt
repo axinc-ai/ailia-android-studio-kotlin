@@ -38,8 +38,11 @@ object ModelDownloader {
     /** 変換済みQNNモデル(.qnn)の配置先。ailia LLMのバージョンごとにディレクトリが分かれる。 */
     private const val QNN_LLM_PATH = "gemma/qnn/v1.5.0"
 
-    /** MTP対応のQNNモデル(-mtp.qnn / -mtp-assistant.qnn)の配置先。ailia LLM 1.5.1以降が必要。 */
+    /** ailia LLM 1.5.1向けのQNNモデル(-mtp.qnn / -mtp-assistant.qnn / -mmproj.qnn)の配置先。 */
     private const val QNN_LLM_MTP_PATH = "gemma/qnn/v1.5.1"
+
+    /** ailia LLM 1.5.1向けのQNNモデルのファイル名(精度を含む)。 */
+    private val QNN_LLM_V151_NAME = Regex("-(fp16|int16)-")
 
     const val GEMMA_2_MODEL_URL = "$BASE_URL/gemma/gemma-2-2b-it-Q4_K_M.gguf"
     const val SAMPLE_IMAGE_URL = "$BASE_URL/misc/sample_image.jpg"
@@ -80,8 +83,8 @@ object ModelDownloader {
         isDownloaded(modelDirectory(context), qnnLLMModelSpec(fileName))
 
     private fun qnnLLMModelSpec(fileName: String): ModelFileSpec {
-        // mmprojはailia LLM 1.5.0向けのファイルをMTPでもそのまま使う
-        val path = if (fileName.contains("-mtp")) QNN_LLM_MTP_PATH else QNN_LLM_PATH
+        // 1.5.1向けのファイルは "<prefix>-<soc>-<precision>-..." と精度を含む。1.5.0向けは精度を含まない
+        val path = if (QNN_LLM_V151_NAME.containsMatchIn(fileName)) QNN_LLM_MTP_PATH else QNN_LLM_PATH
         return ModelFileSpec("$BASE_URL/$path/$fileName", fileName)
     }
 

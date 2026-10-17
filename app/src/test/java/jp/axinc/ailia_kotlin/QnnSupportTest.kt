@@ -43,8 +43,12 @@ class QnnSupportTest {
             QnnSupport.llmQnnFileName("sm8475", LLMModelType.GEMMA_4_E2B),
         )
         assertEquals(
-            "gemma4-e2b-sm7635-mmproj.qnn",
+            "gemma4-e2b-sm7635-int16-mmproj.qnn",
             QnnSupport.llmQnnFileName("sm7635", LLMModelType.GEMMA_4_E2B, QnnSupport.QnnLlmFile.MMPROJ),
+        )
+        assertEquals(
+            "gemma4-e2b-sm8475-fp16-mmproj.qnn",
+            QnnSupport.llmQnnFileName("sm8475", LLMModelType.GEMMA_4_E2B, QnnSupport.QnnLlmFile.MMPROJ),
         )
     }
 
@@ -83,7 +87,7 @@ class QnnSupportTest {
             QnnSupport.llmQnnFileName("sm7635", LLMModelType.GEMMA_4_E4B),
         )
         assertEquals(
-            "gemma4-e4b-sm7635-mmproj.qnn",
+            "gemma4-e4b-sm7635-int16-mmproj.qnn",
             QnnSupport.llmQnnFileName("sm7635", LLMModelType.GEMMA_4_E4B, QnnSupport.QnnLlmFile.MMPROJ),
         )
         // Hexagon v69はContext Binaryの2GB制約のためE4BをQNNで使わない

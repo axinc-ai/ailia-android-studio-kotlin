@@ -52,7 +52,7 @@ object QnnSupport {
      * テキストモデルはMTP対応版 "<prefix>-<soc>-<precision>-mtp.qnn" (ailia LLM 1.5.1)を使う。
      * MTP対応版はAssistantを開かなければ従来通り1トークンずつ生成するため、MTPのON/OFFで同じファイルを使える。
      * MTPのAssistantは "<prefix>-<soc>-<precision>-mtp-assistant.qnn"、
-     * 画像/音声エンコーダは "<prefix>-<soc>-mmproj.qnn" (ailia LLM 1.5.0)。
+     * 画像/音声エンコーダは "<prefix>-<soc>-<precision>-mmproj.qnn" (いずれもailia LLM 1.5.1)。
      *
      * Gemma 4 E4BはHexagon v69 (sm8475)のContext Binaryの2GB制約に収まらないため、
      * v73のsm7635のみで使用する。ここにないモデル/SoCの組み合わせはCPUで実行する。
@@ -79,7 +79,7 @@ object QnnSupport {
         /** ailia LLM 1.5.1向けのMTP対応版 "<prefix>-<soc>-<precision>-mtp.qnn"。 */
         V1_5_1("v1.5.1", supportsMtp = true),
 
-        /** ailia LLM 1.5.0向けの従来版 "<prefix>-<soc>.qnn"。新しいライブラリでの互換性検証用。 */
+        /** ailia LLM 1.5.0向けの従来版 "<prefix>-<soc>.qnn" / "<prefix>-<soc>-mmproj.qnn"。新しいライブラリでの互換性検証用。 */
         V1_5_0("v1.5.0", supportsMtp = false),
     }
 
@@ -136,18 +136,18 @@ object QnnSupport {
         val model = LLM_QNN_MODELS[modelType] ?: return null
         if (soc !in model.socs) return null
         val prefix = model.filePrefix
-        // mmprojはどちらのフォーマットでもv1.5.0のファイルを使う
-        if (file == QnnLlmFile.MMPROJ) return "$prefix-$soc-mmproj.qnn"
         return when (format) {
             QnnModelFormat.V1_5_0 -> when (file) {
                 QnnLlmFile.MODEL -> "$prefix-$soc.qnn"
-                else -> null
+                QnnLlmFile.MMPROJ -> "$prefix-$soc-mmproj.qnn"
+                QnnLlmFile.MTP_ASSISTANT -> null
             }
             QnnModelFormat.V1_5_1 -> {
                 val precision = LLM_QNN_PRECISIONS[soc] ?: return null
                 when (file) {
+                    QnnLlmFile.MODEL -> "$prefix-$soc-$precision-mtp.qnn"
+                    QnnLlmFile.MMPROJ -> "$prefix-$soc-$precision-mmproj.qnn"
                     QnnLlmFile.MTP_ASSISTANT -> "$prefix-$soc-$precision-mtp-assistant.qnn"
-                    else -> "$prefix-$soc-$precision-mtp.qnn"
                 }
             }
         }
