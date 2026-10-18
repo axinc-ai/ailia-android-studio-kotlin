@@ -91,6 +91,11 @@ class AiliaMultimodalLLMSample(
         private const val MAX_GENERATION_STEPS = 4096
     }
 
+    /** 直前の[initialize]でモデルのダウンロードに失敗した理由。失敗していなければnull。 */
+    @Volatile
+    var downloadError: String? = null
+        private set
+
     interface MultimodalLLMListener {
         fun onDownloadProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long)
         fun onStatus(status: String)
@@ -111,6 +116,7 @@ class AiliaMultimodalLLMSample(
         context: Context,
         listener: MultimodalLLMListener? = null,
     ): Boolean {
+        downloadError = null
         return try {
             if (isInitialized) {
                 release()
@@ -244,13 +250,16 @@ class AiliaMultimodalLLMSample(
 
             override fun onError(error: String) {
                 Log.e(TAG, "Download error: $error")
+                downloadError = error
             }
         }
-        return if (useQnn) {
+        val file = if (useQnn) {
             ModelDownloader.downloadQnnLLMModel(context, fileName, downloadListener)
         } else {
             ModelDownloader.downloadLLMModel(context, fileName, downloadListener)
         }
+        if (file == null) downloadError = downloadError ?: "Failed to download $fileName"
+        return file
     }
 
     /**

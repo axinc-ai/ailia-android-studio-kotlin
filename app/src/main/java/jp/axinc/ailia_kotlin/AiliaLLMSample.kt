@@ -148,6 +148,11 @@ class AiliaLLMSample {
     var downloadingFileName: String? = null
         private set
 
+    /** 直前の[initialize]でモデルのダウンロードに失敗した理由。失敗していなければnull。 */
+    @Volatile
+    var downloadError: String? = null
+        private set
+
     companion object {
         private const val TAG = "AiliaLLMSample"
         private const val N_CTX = 8192 // Context window size
@@ -174,6 +179,8 @@ class AiliaLLMSample {
         context: Context,
         progressListener: ModelDownloader.DownloadListener? = null
     ): Boolean {
+        downloadError = null
+        val listener = ModelDownloader.recordingErrors(progressListener) { downloadError = it }
         return try {
             if (isInitialized) {
                 release()
@@ -189,12 +196,13 @@ class AiliaLLMSample {
             Log.i(TAG, "Downloading ${modelType.displayName} model ($fileName) for ${backend.displayName}...")
             downloadingFileName = fileName
             val modelFile = if (qnnFileName != null) {
-                ModelDownloader.downloadQnnLLMModel(context, qnnFileName, progressListener)
+                ModelDownloader.downloadQnnLLMModel(context, qnnFileName, listener)
             } else {
-                ModelDownloader.downloadLLMModel(context, modelType.fileName, progressListener)
+                ModelDownloader.downloadLLMModel(context, modelType.fileName, listener)
             }
             if (modelFile == null) {
                 Log.e(TAG, "Failed to download model")
+                downloadError = downloadError ?: "Failed to download $fileName"
                 return false
             }
             modelPath = modelFile.absolutePath
@@ -203,10 +211,11 @@ class AiliaLLMSample {
             val mtpFile = mtpFileName?.let {
                 Log.i(TAG, "Downloading MTP assistant ($it) for ${backend.displayName}...")
                 downloadingFileName = it
-                LLMMtp.download(context, it, backend, progressListener)
+                LLMMtp.download(context, it, backend, listener)
             }
             if (mtpFileName != null && mtpFile == null) {
                 Log.e(TAG, "Failed to download MTP assistant")
+                downloadError = downloadError ?: "Failed to download $mtpFileName"
                 return false
             }
 
