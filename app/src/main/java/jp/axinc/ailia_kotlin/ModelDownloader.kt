@@ -88,6 +88,23 @@ object ModelDownloader {
         return ModelFileSpec("$BASE_URL/$path/$fileName", fileName)
     }
 
+    /** listenerへ中継しつつ、ダウンロード失敗の理由を[onError]でも受け取れるようにする。 */
+    fun recordingErrors(listener: DownloadListener?, onError: (String) -> Unit): DownloadListener =
+        object : DownloadListener {
+            override fun onProgress(bytesDownloaded: Long, totalBytes: Long) {
+                listener?.onProgress(bytesDownloaded, totalBytes)
+            }
+
+            override fun onComplete(file: File) {
+                listener?.onComplete(file)
+            }
+
+            override fun onError(error: String) {
+                onError.invoke(error)
+                listener?.onError(error)
+            }
+        }
+
     fun downloadFile(
         directory: File,
         spec: ModelFileSpec,
