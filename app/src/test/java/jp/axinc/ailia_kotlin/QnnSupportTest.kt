@@ -114,8 +114,10 @@ class QnnSupportTest {
             QnnSupport.speechQnnFileName("sm7635", SpeechModelType.WHISPER_MEDIUM),
         )
         assertNull(QnnSupport.speechQnnFileName("sm7635", SpeechModelType.WHISPER_SMALL))
-        // sm8475は実機で正しく動かないため対象外
-        assertNull(QnnSupport.speechQnnFileName("sm8475", SpeechModelType.WHISPER_MEDIUM))
+        assertEquals(
+            "whisper-medium-sm8475-int16.qnn",
+            QnnSupport.speechQnnFileName("sm8475", SpeechModelType.WHISPER_MEDIUM),
+        )
         assertEquals(
             "whisper-large-v3-turbo-qcs6490-int16.qnn",
             QnnSupport.speechQnnFileName("qcs6490", SpeechModelType.WHISPER_LARGE_V3_TURBO),

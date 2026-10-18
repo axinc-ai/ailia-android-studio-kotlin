@@ -158,9 +158,7 @@ object QnnSupport {
      * ファイル名は "<prefix>-<soc>-<precision>.qnn" (ailia Speech 1.6.0)。
      * .qnnはencoder/decoderの両方を含み、ailia SpeechのopenModelに渡すだけでNPUで実行される。
      */
-    // sm8475 (Hexagon v69)向けのパッケージもあるが、実機(ASUS_AI2202)でturboは誤認識、
-    // mediumは2回目のtranscribeで停止するため、ailia Speech側で修正されるまで使わない
-    private val SPEECH_QNN_SOCS = setOf("qcs6490", "sc8380xp", "sm7635")
+    private val SPEECH_QNN_SOCS = setOf("qcs6490", "sc8380xp", "sm7635", "sm8475")
 
     private val SPEECH_QNN_MODELS = mapOf(
         SpeechModelType.WHISPER_MEDIUM to QnnModel("whisper-medium", SPEECH_QNN_SOCS),
