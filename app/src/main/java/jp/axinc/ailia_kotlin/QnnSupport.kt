@@ -155,12 +155,23 @@ object QnnSupport {
 
     /**
      * ailia Speechの変換済みQNNモデル(.qnn)のファイル名の接頭辞と、そのモデルを使えるSoC。
-     * ファイル名は "<prefix>_<soc>.qnn" (ailia Speech 1.6.0)。
+     * ファイル名は "<prefix>-<soc>-<precision>.qnn" (ailia Speech 1.6.0)。
      * .qnnはencoder/decoderの両方を含み、ailia SpeechのopenModelに渡すだけでNPUで実行される。
      */
+    // sm8475 (Hexagon v69)向けのパッケージもあるが、実機(ASUS_AI2202)でturboは誤認識、
+    // mediumは2回目のtranscribeで停止するため、ailia Speech側で修正されるまで使わない
+    private val SPEECH_QNN_SOCS = setOf("qcs6490", "sc8380xp", "sm7635")
+
     private val SPEECH_QNN_MODELS = mapOf(
-        SpeechModelType.WHISPER_LARGE_V3_TURBO to QnnModel("whisper_large_v3_turbo", setOf("sm7635")),
+        SpeechModelType.WHISPER_MEDIUM to QnnModel("whisper-medium", SPEECH_QNN_SOCS),
+        SpeechModelType.WHISPER_LARGE_V3_TURBO to QnnModel("whisper-large-v3-turbo", SPEECH_QNN_SOCS),
     )
+
+    /**
+     * ailia SpeechのQNNモデルの活性値の精度。
+     * 重みはINT8、K/VはINT8で、全SoCで活性値INT16の同じグラフを使う。
+     */
+    private val SPEECH_QNN_PRECISIONS = SPEECH_QNN_SOCS.associateWith { "int16" }
 
     /** 指定したSpeechモデルのQNNモデルファイル名。この端末向けのモデルがなければnull。 */
     fun speechQnnFileName(modelType: SpeechModelType): String? = speechQnnFileName(socName, modelType)
@@ -170,7 +181,8 @@ object QnnSupport {
         if (soc == null) return null
         val model = SPEECH_QNN_MODELS[modelType] ?: return null
         if (soc !in model.socs) return null
-        return "${model.filePrefix}_$soc.qnn"
+        val precision = SPEECH_QNN_PRECISIONS[soc] ?: return null
+        return "${model.filePrefix}-$soc-$precision.qnn"
     }
 
     /** ailia SDKの環境名がQNNバックエンドかどうかを判定する。 */
