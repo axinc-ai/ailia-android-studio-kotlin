@@ -13,8 +13,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
-import axip.ailia.AiliaEnvironment
-import axip.ailia.AiliaModel
 import axip.ailia_speech.AiliaSpeech
 import axip.ailia_speech.AiliaSpeechText
 import axip.ailia_speech.IntermediateCallback
@@ -108,8 +106,6 @@ class AiliaSpeechSample(private val modelDirectory: File) {
         private const val DIARIZATION_EMBEDDING_URL = "https://storage.googleapis.com/ailia-models/pyannote-audio/speaker-embedding.onnx"
         private const val DIARIZATION_SEGMENTATION_FILE = "segmentation.onnx"
         private const val DIARIZATION_EMBEDDING_FILE = "speaker-embedding.onnx"
-        /** QNN実行時にSenseVoiceの入力シェイプを固定する長さ(秒) */
-        private const val QNN_STATIC_INPUT_LENGTH_SEC = 11
     }
 
     private var speech: AiliaSpeech? = null
@@ -127,6 +123,13 @@ class AiliaSpeechSample(private val modelDirectory: File) {
     private var speechIntermediateCallback: IntermediateCallback? = null
     var currentModelType: SpeechModelType = DEFAULT_MODEL_TYPE
     var diarizationEnabled: Boolean = false
+
+    /**
+     * trueの場合、SoC固有の変換済みQNNモデル(.qnn)をNPUで実行する。
+     * .qnnはencoder/decoderの両方を含むため、openModelに渡すだけでQNNで動作する。
+     * VADと話者分離はinitializeSpeechに渡したenvIdで実行する。
+     */
+    var useQnn: Boolean = false
 
     val isMicRecording: Boolean
         get() = micRecording.get()
@@ -147,20 +150,29 @@ class AiliaSpeechSample(private val modelDirectory: File) {
         currentModelType = modelType
         return try {
             Log.i(TAG, "Starting speech model download/check for ${modelType.displayName}...")
-            check(ModelDownloader.downloadFile(
-                modelDirectory,
-                ModelFileSpec(modelType.encoderUrl, modelType.encoderFileName),
-                listener,
-            ) != null)
-            if (modelType.needsDecoder) {
+            val qnnFileName = qnnFileNameOrNull()
+            if (qnnFileName != null) {
                 check(ModelDownloader.downloadFile(
                     modelDirectory,
-                    ModelFileSpec(modelType.decoderUrl, modelType.decoderFileName),
+                    ModelDownloader.qnnSpeechModelSpec(qnnFileName),
                     listener,
                 ) != null)
-            }
-            for (extraFile in modelType.extraFiles) {
-                check(ModelDownloader.downloadFile(modelDirectory, extraFile, listener) != null)
+            } else {
+                check(ModelDownloader.downloadFile(
+                    modelDirectory,
+                    ModelFileSpec(modelType.encoderUrl, modelType.encoderFileName),
+                    listener,
+                ) != null)
+                if (modelType.needsDecoder) {
+                    check(ModelDownloader.downloadFile(
+                        modelDirectory,
+                        ModelFileSpec(modelType.decoderUrl, modelType.decoderFileName),
+                        listener,
+                    ) != null)
+                }
+                for (extraFile in modelType.extraFiles) {
+                    check(ModelDownloader.downloadFile(modelDirectory, extraFile, listener) != null)
+                }
             }
             // Always download VAD model
             Log.i(TAG, "Downloading VAD model...")
@@ -192,11 +204,16 @@ class AiliaSpeechSample(private val modelDirectory: File) {
         }
 
         return try {
-            val encoderPath = File(modelDirectory, currentModelType.encoderFileName).absolutePath
-            val decoderPath = if (currentModelType.needsDecoder) {
-                File(modelDirectory, currentModelType.decoderFileName).absolutePath
-            } else {
-                ""
+            val qnnFileName = qnnFileNameOrNull()
+            if (useQnn && qnnFileName == null) {
+                throw IllegalStateException("QNN model is not available for ${currentModelType.displayName} on ${QnnSupport.socName}")
+            }
+            // .qnnはencoder/decoderの両方を含むため、両方に同じファイルを渡す
+            val encoderPath = File(modelDirectory, qnnFileName ?: currentModelType.encoderFileName).absolutePath
+            val decoderPath = when {
+                qnnFileName != null -> encoderPath
+                currentModelType.needsDecoder -> File(modelDirectory, currentModelType.decoderFileName).absolutePath
+                else -> ""
             }
 
             // When diarization is enabled, disable LIVE flag (diarization requires non-live mode)
@@ -205,47 +222,17 @@ class AiliaSpeechSample(private val modelDirectory: File) {
             val flags = if (useLiveFlag) AiliaSpeech.AILIA_SPEECH_FLAG_LIVE else AiliaSpeech.AILIA_SPEECH_FLAG_NONE
             liveModeEnabled = useLiveFlag
 
-            Log.i(TAG, "Initializing speech with envId=$envId, model=${currentModelType.displayName}, liveMode=$liveMode, diarization=$diarizationEnabled, useLiveFlag=$useLiveFlag")
+            Log.i(TAG, "Initializing speech with envId=$envId, model=${currentModelType.displayName}, qnn=${qnnFileName != null}, liveMode=$liveMode, diarization=$diarizationEnabled, useLiveFlag=$useLiveFlag")
             Log.i(TAG, "Encoder: $encoderPath")
             Log.i(TAG, "Decoder: $decoderPath")
 
-            val qnnSelected = isQnnEnvironment(envId)
-            val isSenseVoice =
-                currentModelType.modelTypeId == AiliaSpeech.AILIA_SPEECH_MODEL_TYPE_SENSEVOICE_SMALL
-            // QNN選択時、WhisperはdecoderがQNNで動作しないためencoderのみQNNで実行し、
-            // decoderとVADはCPU側で実行する。SenseVoiceは全体をQNNで実行する。
-            val engineEnvId = if (qnnSelected && !isSenseVoice) cpuEnvironmentId() else envId
-
             val engine = AiliaSpeech(
-                envId = engineEnvId,
+                envId = envId,
                 task = AiliaSpeech.AILIA_SPEECH_TASK_TRANSCRIBE,
                 flags = flags
             )
             speech = engine
-            if (qnnSelected) {
-                if (isSenseVoice) {
-                    // QNNは固定シェイプが必要なため入力長を10秒に固定する
-                    Log.i(TAG, "QNN selected: setStaticInputLength(${QNN_STATIC_INPUT_LENGTH_SEC}) for SenseVoice")
-                    requireSuccess(
-                        "setStaticInputLength",
-                        engine.setStaticInputLength(QNN_STATIC_INPUT_LENGTH_SEC)
-                    )
-                } else {
-                    Log.i(TAG, "QNN selected: encoder on envId=$envId, others on envId=$engineEnvId")
-                    requireSuccess(
-                        "setEnvId(encoder)",
-                        engine.setEnvId(AiliaSpeech.AILIA_SPEECH_MODEL_TARGET_ENCODER, envId)
-                    )
-                }
-            }
             requireSuccess("openModel", engine.openModel(encoderPath, decoderPath, currentModelType.modelTypeId))
-
-            if (qnnSelected) {
-                // QNNは初回推論時にグラフを構築するため、事前にウォームアップして初回transcribeの遅延を抑える
-                val warmupStartNanos = System.nanoTime()
-                requireSuccess("warmup", engine.warmup())
-                Log.i(TAG, "QNN warmup finished in ${(System.nanoTime() - warmupStartNanos) / 1_000_000} ms")
-            }
 
             // 言語設定("auto"は自動判定のためsetLanguageを呼ばない。Flutter版と同じ挙動)
             if (language != "auto") {
@@ -290,30 +277,9 @@ class AiliaSpeechSample(private val modelDirectory: File) {
         }
     }
 
-    /** 指定envIdがQNN環境かどうかを環境名から判定する。 */
-    private fun isQnnEnvironment(envId: Int): Boolean {
-        if (envId < 0) return false
-        return try {
-            AiliaModel.getEnvironments().firstOrNull { it.id == envId }
-                ?.name?.contains("QNN", ignoreCase = true) == true
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to query ailia environments: ${e.message}")
-            false
-        }
-    }
-
-    /** BLASを優先し、なければ通常CPUのenvIdを返す。取得できない場合は自動選択(-1)。 */
-    private fun cpuEnvironmentId(): Int {
-        return try {
-            val environments = AiliaModel.getEnvironments()
-            val cpuEnv = environments.firstOrNull { it.type == AiliaEnvironment.TYPE_BLAS }
-                ?: environments.firstOrNull { it.type == AiliaEnvironment.TYPE_CPU }
-            cpuEnv?.id ?: -1
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to query ailia environments: ${e.message}")
-            -1
-        }
-    }
+    /** QNNを選択している場合のQNNモデルファイル名。CPU時や未対応の組み合わせではnull。 */
+    private fun qnnFileNameOrNull(): String? =
+        if (useQnn) QnnSupport.speechQnnFileName(currentModelType) else null
 
     /**
      * Processes audio from a WAV file (non-live mode).

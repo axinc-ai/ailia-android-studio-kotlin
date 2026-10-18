@@ -102,4 +102,15 @@ class QnnSupportTest {
         assertNull(QnnSupport.llmQnnFileName("sm8650", LLMModelType.GEMMA_4_E2B))
         assertNull(QnnSupport.llmQnnFileName(null, LLMModelType.GEMMA_4_E2B))
     }
+
+    @Test
+    fun `Whisper Large V3 Turbo runs on QNN only on sm7635`() {
+        assertEquals(
+            "whisper_large_v3_turbo_sm7635.qnn",
+            QnnSupport.speechQnnFileName("sm7635", SpeechModelType.WHISPER_LARGE_V3_TURBO),
+        )
+        assertNull(QnnSupport.speechQnnFileName("sm8475", SpeechModelType.WHISPER_LARGE_V3_TURBO))
+        assertNull(QnnSupport.speechQnnFileName("sm7635", SpeechModelType.SENSEVOICE_SMALL))
+        assertNull(QnnSupport.speechQnnFileName(null, SpeechModelType.WHISPER_LARGE_V3_TURBO))
+    }
 }

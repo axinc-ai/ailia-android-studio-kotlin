@@ -201,6 +201,13 @@ class MainActivity : AppCompatActivity() {
      * QNN版のあるモデルに戻したときはこの選択に戻す。
      */
     private var preferredLLMBackend: LLMBackend = LLMBackend.QNN
+    /** Speech2Textで変換済みQNNモデル(.qnn)をNPUで実行するか。setupSpeechEnvSpinnerで決まる。 */
+    private var selectedSpeechUseQnn = false
+    /**
+     * ユーザーがSpeech2TextでQNNを選んでいるか。既定はQNN。
+     * QNN版のないモデルでは一時的にCPUで実行し、QNN版のあるモデルに戻したときはこの選択に戻す。
+     */
+    private var preferredSpeechUseQnn = true
     /** 生成中かどうか。生成中はSendボタンをStopボタンとして使う。 */
     private var llmGenerating = false
 
@@ -729,7 +736,7 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.SPEECH_TO_TEXT -> {
                 // Speech2Textのバックエンド選択はRun/Recordボタンの右側に表示する
                 envSpinner.visibility = View.GONE
-                setupOnnxEnvSpinner(useBlas = true, target = speechEnvSpinner)
+                setupSpeechEnvSpinner()
             }
 
             AlgorithmType.TEXT_TO_SPEECH -> {
@@ -836,7 +843,10 @@ class MainActivity : AppCompatActivity() {
             }
             AlgorithmType.SPEECH_TO_TEXT -> {
                 selectedIndex = SpeechModelType.values().indexOf(selectedSpeechModelType)
-                SpeechModelType.values().map { it.displayName }.toTypedArray()
+                // この端末向けのQNNモデル(.qnn)があるモデルはNPUで実行できることを併記する
+                SpeechModelType.values().map {
+                    if (QnnSupport.speechQnnFileName(it) != null) "${it.displayName} (QNN)" else it.displayName
+                }.toTypedArray()
             }
             AlgorithmType.TEXT_TO_SPEECH -> {
                 selectedIndex = VoiceModelType.values().indexOf(selectedVoiceModelType)
@@ -924,6 +934,69 @@ class MainActivity : AppCompatActivity() {
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
+    }
+
+    /**
+     * Speech2Textの実行バックエンド選択スピナーを更新する。
+     * ailia SDKの環境(CPU/BLASなど)に加え、ailia SpeechのAPIで取得したSoC名に対応する
+     * 変換済みQNNモデル(.qnn)がある場合は "QNN <SoC名>" を選択肢に追加する。
+     * ailia SDKのQNN環境はailia Speechでは使わないため選択肢から外す。
+     */
+    private fun setupSpeechEnvSpinner() {
+        val environments = try {
+            if (ailiaEnvironments == null) {
+                Ailia.SetTemporaryCachePath(cacheDir.absolutePath)
+                ailiaEnvironments = AiliaModel.getEnvironments().filter {
+                    isSelectableAiliaEnvironment(it.name)
+                }
+            }
+            ailiaEnvironments!!.filter { !QnnSupport.isQnnEnvironmentName(it.name) }
+        } catch (e: Exception) {
+            Log.e("AILIA_Main", "Failed to get ailia environments: ${e.message}")
+            emptyList()
+        }
+        val qnnAvailable = QnnSupport.speechQnnFileName(selectedSpeechModelType) != null
+        val items = environments.map { "${it.name} (id:${it.id})" }.toMutableList()
+        if (qnnAvailable) items.add("QNN ${QnnSupport.socName}")
+        val qnnPosition = if (qnnAvailable) items.size - 1 else -1
+        // QNN版のないモデルではBLAS(なければCPU)で実行する。VADと話者分離もこの環境で動かす
+        val cpuIndex = if (environments.isEmpty()) -1 else preferredBlasThenCpuEnvironmentIndex(environments.map { it.type })
+        val currentIndex = environments.indexOfFirst { it.id == selectedEnvId }
+        val cpuSelectionIndex = if (currentIndex >= 0 && !selectedSpeechUseQnn) currentIndex else cpuIndex
+
+        selectedSpeechUseQnn = qnnAvailable && preferredSpeechUseQnn
+        val selection = if (selectedSpeechUseQnn) qnnPosition else cpuSelectionIndex
+        if (cpuIndex >= 0) {
+            selectedEnvId = environments[if (selectedSpeechUseQnn) cpuIndex else cpuSelectionIndex].id
+        }
+
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, items)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        speechEnvSpinner.onItemSelectedListener = null
+        speechEnvSpinner.adapter = adapter
+        if (selection >= 0) speechEnvSpinner.setSelection(selection, false)
+        speechEnvSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val newUseQnn = position == qnnPosition
+                val newEnvId = if (newUseQnn) {
+                    if (cpuIndex >= 0) environments[cpuIndex].id else selectedEnvId
+                } else {
+                    environments[position].id
+                }
+                if (newUseQnn != selectedSpeechUseQnn || newEnvId != selectedEnvId) {
+                    selectedSpeechUseQnn = newUseQnn
+                    preferredSpeechUseQnn = newUseQnn
+                    selectedEnvId = newEnvId
+                    // バックエンド切り替え時は解放のみ(ダウンロードはRun/Record押下時)
+                    stopMicRecording(finalize = false)
+                    speechSample.releaseSpeech()
+                    isInitialized = false
+                    isDownloadingModel.set(false)
+                }
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+        speechEnvSpinner.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
     }
 
     /**
@@ -1029,6 +1102,8 @@ class MainActivity : AppCompatActivity() {
                 val newType = SpeechModelType.values()[position]
                 if (newType != selectedSpeechModelType) {
                     selectedSpeechModelType = newType
+                    // 選んだモデルのQNN対応状況で選択肢を決める
+                    setupSpeechEnvSpinner()
                     stopMicRecording(finalize = false)
                     // モデルダウンロードはRun/Record押下時まで遅延する
                     speechSample.releaseSpeech()
@@ -4182,12 +4257,15 @@ class MainActivity : AppCompatActivity() {
         val liveMode = isMicMode && liveModeCheckBox.isChecked
         val modelType = selectedSpeechModelType
         val envId = selectedEnvId
+        val useQnn = selectedSpeechUseQnn
         val language = if (isMicMode) selectedSpeechLanguage else "auto"
         processingTimeTextView.text = "Processing Time: -- ms"
         speechRunButton.isEnabled = false
         micRecordButton.isEnabled = false
         speechExecutor.execute {
             try {
+                // QNN選択時はダウンロードするファイルも.qnnに変わるため先に設定する
+                speechSample.useQnn = useQnn
                 val downloaded = speechSample.downloadModel(modelType, object : ModelDownloadListener {
                     override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
                         Log.d("AILIA_Main", "Speech: downloading $fileName")

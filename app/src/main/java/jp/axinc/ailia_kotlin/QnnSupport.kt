@@ -57,11 +57,11 @@ object QnnSupport {
      * Gemma 4 E4BはHexagon v69 (sm8475)のContext Binaryの2GB制約に収まらないため、
      * v73のsm7635のみで使用する。ここにないモデル/SoCの組み合わせはCPUで実行する。
      */
-    private data class QnnLlmModel(val filePrefix: String, val socs: Set<String>)
+    private data class QnnModel(val filePrefix: String, val socs: Set<String>)
 
     private val LLM_QNN_MODELS = mapOf(
-        LLMModelType.GEMMA_4_E2B to QnnLlmModel("gemma4-e2b", setOf("sm8475", "sm7635")),
-        LLMModelType.GEMMA_4_E4B to QnnLlmModel("gemma4-e4b", setOf("sm7635")),
+        LLMModelType.GEMMA_4_E2B to QnnModel("gemma4-e2b", setOf("sm8475", "sm7635")),
+        LLMModelType.GEMMA_4_E4B to QnnModel("gemma4-e4b", setOf("sm7635")),
     )
 
     /** MTP対応のQNNモデルの活性値の精度。SoCごとに変換時の精度が異なる。 */
@@ -151,6 +151,26 @@ object QnnSupport {
                 }
             }
         }
+    }
+
+    /**
+     * ailia Speechの変換済みQNNモデル(.qnn)のファイル名の接頭辞と、そのモデルを使えるSoC。
+     * ファイル名は "<prefix>_<soc>.qnn" (ailia Speech 1.6.0)。
+     * .qnnはencoder/decoderの両方を含み、ailia SpeechのopenModelに渡すだけでNPUで実行される。
+     */
+    private val SPEECH_QNN_MODELS = mapOf(
+        SpeechModelType.WHISPER_LARGE_V3_TURBO to QnnModel("whisper_large_v3_turbo", setOf("sm7635")),
+    )
+
+    /** 指定したSpeechモデルのQNNモデルファイル名。この端末向けのモデルがなければnull。 */
+    fun speechQnnFileName(modelType: SpeechModelType): String? = speechQnnFileName(socName, modelType)
+
+    /** SoC名を引数で受け取るSpeech用ファイル名生成本体。 */
+    internal fun speechQnnFileName(soc: String?, modelType: SpeechModelType): String? {
+        if (soc == null) return null
+        val model = SPEECH_QNN_MODELS[modelType] ?: return null
+        if (soc !in model.socs) return null
+        return "${model.filePrefix}_$soc.qnn"
     }
 
     /** ailia SDKの環境名がQNNバックエンドかどうかを判定する。 */

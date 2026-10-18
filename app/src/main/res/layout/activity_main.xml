@@ -318,11 +318,14 @@
                 android:textColor="?android:attr/textColorPrimary"
                 android:visibility="gone" />
 
-            <!-- Run/Recordボタンとバックエンド選択を同じ高さで横並びにする -->
+            <!-- Run/Recordボタンとバックエンド選択を同じ高さで横並びにする。
+                 baseline揃えだとSpinnerがボタンの文字位置に合わせて下にずれ、下端が切れるため無効にする -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
+                android:baselineAligned="false"
+                android:gravity="center_vertical"
                 android:orientation="horizontal">
 
                 <Button
