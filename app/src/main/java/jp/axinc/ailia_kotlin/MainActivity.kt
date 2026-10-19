@@ -195,6 +195,11 @@ class MainActivity : AppCompatActivity() {
     // 音声認識処理用の低優先度Executor。カメラ/マイク読み出しと分離して
     // transcribe中もUI(波形表示等)がカクつかないようにする。
     private lateinit var speechExecutor: ExecutorService
+    /** cameraExecutor / speechExecutor のスレッド。モデルを初期化したスレッドで解放するために使う。 */
+    @Volatile
+    private var cameraThread: Thread? = null
+    @Volatile
+    private var speechThread: Thread? = null
 
     private var selectedVoiceModelType: VoiceModelType = VoiceModelType.GPT_SOVITS_V1
     private var selectedSpeechModelType: SpeechModelType = SpeechModelType.SENSEVOICE_SMALL
@@ -331,7 +336,9 @@ class MainActivity : AppCompatActivity() {
 
         // cameraExecutorはsetupModeSelection()より先に初期化する必要がある
         // (SpinnerのonItemSelectedでinitializeAilia()が呼ばれるため)
-        cameraExecutor = Executors.newSingleThreadExecutor()
+        cameraExecutor = Executors.newSingleThreadExecutor { r ->
+            Thread(r).also { cameraThread = it }
+        }
 
         // 音声認識はバックグラウンド優先度の専用スレッドで実行し、
         // 推論中でもUIスレッドがCPUを確保できるようにする
@@ -339,7 +346,7 @@ class MainActivity : AppCompatActivity() {
             Thread {
                 android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
                 r.run()
-            }
+            }.also { speechThread = it }
         }
 
         initializeViews()
@@ -413,10 +420,7 @@ class MainActivity : AppCompatActivity() {
                 QnnSupport.modelFormat = format
                 Log.i("AILIA_Main", "QNN model format: ${format.displayName}")
                 // 読み込むファイルが変わるため、開いているLLMを解放して次のSend押下時に開き直す
-                llmSample.release()
-                multimodalLLMSample.release()
-                almSample.release()
-                toolUseSample.release()
+                releaseLLMModels()
             }
         }
         almInputModeRadioGroup = findViewById(R.id.almInputModeRadioGroup)
@@ -1010,7 +1014,7 @@ class MainActivity : AppCompatActivity() {
                     selectedEnvId = newEnvId
                     // バックエンド切り替え時は解放のみ(ダウンロードはRun/Record押下時)
                     stopMicRecording(finalize = false)
-                    speechSample.releaseSpeech()
+                    releaseSpeechModel()
                     isInitialized = false
                     isDownloadingModel.set(false)
                 }
@@ -1057,15 +1061,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun deleteQnnModels(category: ModelDownloader.QnnModelCategory) {
-        // 開いているモデルが削除対象のファイルを参照しないよう、先に解放する
-        when (category) {
-            ModelDownloader.QnnModelCategory.SPEECH -> speechSample.releaseSpeech()
-            ModelDownloader.QnnModelCategory.LLM -> releaseLLMSamples()
+        // 開いているモデルが削除対象のファイルを参照しないよう、モデルのスレッドで解放してから削除する
+        val deleteFiles = {
+            val failed = ModelDownloader.deleteQnnModelFiles(this, category)
+            runOnUiThreadIfActive {
+                refreshQnnModelFileLists()
+                val message = if (failed.isEmpty()) "Deleted QNN models" else "Failed to delete: ${failed.joinToString { it.name }}"
+                Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+            }
         }
-        val failed = ModelDownloader.deleteQnnModelFiles(this, category)
-        refreshQnnModelFileLists()
-        val message = if (failed.isEmpty()) "Deleted QNN models" else "Failed to delete: ${failed.joinToString { it.name }}"
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        when (category) {
+            ModelDownloader.QnnModelCategory.SPEECH -> runOnModelThread(speechExecutor, speechThread) {
+                speechSample.releaseSpeech()
+                deleteFiles()
+            }
+            ModelDownloader.QnnModelCategory.LLM -> {
+                releaseLLMSamples()
+                runOnModelThread(cameraExecutor, cameraThread) { deleteFiles() }
+            }
+        }
     }
 
     /** LLM系の初期化失敗時の表示。ダウンロードに失敗した場合はその理由を優先して表示する。 */
@@ -1073,14 +1087,42 @@ class MainActivity : AppCompatActivity() {
         if (downloadError != null) "Status: Model download failed - $downloadError" else "Status: Initialization failed"
 
     /**
-     * LLM系のモデルを解放する。バックエンドやMTPの切り替え時に呼び出す。
-     * MTPのAssistantはインスタンスを作り直さないと外せないため、次のSend押下時に初期化し直す。
+     * QNNのモデルは初期化したスレッドで解放する。
+     * 別スレッドで解放すると、同じプロセスでもう一方(Speech/LLM)がQNN deviceを作るときに
+     * QNN_DEVICE_ERROR_INVALID_CONFIG(14001)で失敗するため。
+     * 対象のスレッド上ならその場で解放し、それ以外は後続の初期化より先に実行されるよう投入する。
      */
-    private fun releaseLLMSamples() {
+    private fun runOnModelThread(executor: ExecutorService, thread: Thread?, block: () -> Unit) {
+        if (Thread.currentThread() === thread) {
+            block()
+            return
+        }
+        try {
+            executor.execute(block)
+        } catch (e: java.util.concurrent.RejectedExecutionException) {
+            Log.w("AILIA_Main", "Model thread is shut down, skipped release: ${e.message}")
+        }
+    }
+
+    /** Speech2Textのモデルを初期化したspeechExecutorで解放する。 */
+    private fun releaseSpeechModel() = runOnModelThread(speechExecutor, speechThread) {
+        speechSample.releaseSpeech()
+    }
+
+    /** LLM/VLM/ALM/Tool Useのモデルを初期化したcameraExecutorで解放する。 */
+    private fun releaseLLMModels(block: () -> Unit = {
         llmSample.release()
         multimodalLLMSample.release()
         almSample.release()
         toolUseSample.release()
+    }) = runOnModelThread(cameraExecutor, cameraThread, block)
+
+    /**
+     * LLM系のモデルを解放する。バックエンドやMTPの切り替え時に呼び出す。
+     * MTPのAssistantはインスタンスを作り直さないと外せないため、次のSend押下時に初期化し直す。
+     */
+    private fun releaseLLMSamples() {
+        releaseLLMModels()
         isInitialized = false
         llmChatContainer.removeAllViews()
         setLLMControlsEnabled(true)
@@ -1179,7 +1221,7 @@ class MainActivity : AppCompatActivity() {
                     setupSpeechEnvSpinner()
                     stopMicRecording(finalize = false)
                     // モデルダウンロードはRun/Record押下時まで遅延する
-                    speechSample.releaseSpeech()
+                    releaseSpeechModel()
                     isInitialized = false
                     isDownloadingModel.set(false)
                     clearTranscript()
@@ -1206,7 +1248,7 @@ class MainActivity : AppCompatActivity() {
                 if (newType != selectedLLMModelType) {
                     selectedLLMModelType = newType
                     // モデル切り替え時は解放のみ(ダウンロードはSend押下時)
-                    llmSample.release()
+                    releaseLLMModels { llmSample.release() }
                     isInitialized = false
                     llmChatContainer.removeAllViews()
                     setLLMControlsEnabled(true)
@@ -1220,9 +1262,11 @@ class MainActivity : AppCompatActivity() {
                 if (newType != selectedGemma4ModelType) {
                     selectedGemma4ModelType = newType
                     // モデル切り替え時は解放のみ(ダウンロードはSend押下時)
-                    multimodalLLMSample.release()
-                    almSample.release()
-                    toolUseSample.release()
+                    releaseLLMModels {
+                        multimodalLLMSample.release()
+                        almSample.release()
+                        toolUseSample.release()
+                    }
                     isInitialized = false
                     llmChatContainer.removeAllViews()
                     setLLMControlsEnabled(true)
@@ -1782,15 +1826,12 @@ class MainActivity : AppCompatActivity() {
             detrSample.release()
             miniLMv2Sample.release()
             trackerSample.releaseTracker()
-            if (includeSpeech) speechSample.releaseSpeech()
+            if (includeSpeech) releaseSpeechModel()
             if (includeSpeech) weSpeakerSample.release()
             if (includeSpeech) voiceFilterSample.release()
             voiceSample.releaseVoice()
-            llmSample.release()
-            multimodalLLMSample.release()
             almRecorder.cancelRecording()
-            almSample.release()
-            toolUseSample.release()
+            releaseLLMModels()
         } catch (e: Exception) {
             Log.e("AILIA_Error", "Error releasing algorithms: ${e.message}")
         }
@@ -3192,7 +3233,7 @@ class MainActivity : AppCompatActivity() {
                     // 言語変更のため要再初期化(ダウンロードはRun/Record押下時)
                     if (currentAlgorithm == AlgorithmType.SPEECH_TO_TEXT) {
                         stopMicRecording(finalize = false)
-                        speechSample.releaseSpeech()
+                        releaseSpeechModel()
                         isInitialized = false
                         isDownloadingModel.set(false)
                         clearTranscript()
@@ -3217,7 +3258,7 @@ class MainActivity : AppCompatActivity() {
                     speechLanguageSpinner.visibility = View.GONE
                     stopMicRecording(finalize = false)
                     // liveモード設定が変わるため要再初期化(ダウンロードはRun押下時)
-                    speechSample.releaseSpeech()
+                    releaseSpeechModel()
                     isInitialized = false
                     isDownloadingModel.set(false)
                     clearTranscript()
@@ -3234,7 +3275,7 @@ class MainActivity : AppCompatActivity() {
                     speechLanguageLabel.visibility = View.VISIBLE
                     speechLanguageSpinner.visibility = View.VISIBLE
                     // liveモード設定が変わるため要再初期化(ダウンロードはRecord押下時)
-                    speechSample.releaseSpeech()
+                    releaseSpeechModel()
                     isInitialized = false
                     isDownloadingModel.set(false)
                     clearTranscript()
@@ -3278,7 +3319,7 @@ class MainActivity : AppCompatActivity() {
     /** 音声認識オプション変更後、次回のRun/Recordで設定を反映する。 */
     private fun resetSpeechForOptionChange() {
         stopMicRecording(finalize = false)
-        speechSample.releaseSpeech()
+        releaseSpeechModel()
         isInitialized = false
         isDownloadingModel.set(false)
         clearTranscript()
