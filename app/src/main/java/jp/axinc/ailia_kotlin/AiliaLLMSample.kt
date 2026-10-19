@@ -335,7 +335,14 @@ class AiliaLLMSample {
             val decodeNanos = if (decodeStartNanos > 0) System.nanoTime() - decodeStartNanos else 0L
 
             if (cancelRequested.get()) {
-                while (conversationHistory.size > historySizeBeforeRequest) conversationHistory.removeAt(conversationHistory.lastIndex)
+                // 中断した回も画面に残るため、途中までの応答を履歴に積んで次の発言の文脈にする。
+                // 何も生成していなければ送信前の状態に戻す
+                val partialResponse = responseBuilder.toString()
+                if (partialResponse.isEmpty()) {
+                    while (conversationHistory.size > historySizeBeforeRequest) conversationHistory.removeAt(conversationHistory.lastIndex)
+                } else {
+                    conversationHistory.add(AiliaLLMChatMessage("assistant", partialResponse))
+                }
                 listener?.onError("Generation cancelled")
                 return -1
             }
