@@ -1077,7 +1077,10 @@ class MainActivity : AppCompatActivity() {
             }
             ModelDownloader.QnnModelCategory.LLM -> {
                 releaseLLMSamples()
-                runOnModelThread(cameraExecutor, cameraThread) { deleteFiles() }
+                runOnModelThread(cameraExecutor, cameraThread) {
+                    SharedLLM.release()
+                    deleteFiles()
+                }
             }
         }
     }
@@ -1116,6 +1119,11 @@ class MainActivity : AppCompatActivity() {
         almSample.release()
         toolUseSample.release()
     }) = runOnModelThread(cameraExecutor, cameraThread, block)
+
+    /** LLM / VLM / ALM / Tool Useで共有しているモデルを閉じる。LLM系以外の画面に移るときに呼ぶ。 */
+    private fun releaseSharedLLM() = runOnModelThread(cameraExecutor, cameraThread) {
+        SharedLLM.release()
+    }
 
     /**
      * LLM系のモデルを解放する。バックエンドやMTPの切り替え時に呼び出す。
@@ -1725,6 +1733,14 @@ class MainActivity : AppCompatActivity() {
             if (needsVisionRunButton()) View.VISIBLE else View.GONE
     }
 
+    /** AiliaLLMを共有する画面。 */
+    private val LLM_ALGORITHMS = setOf(
+        AlgorithmType.LLM,
+        AlgorithmType.MULTIMODAL_LLM,
+        AlgorithmType.ALM,
+        AlgorithmType.TOOL_USE,
+    )
+
     private fun switchAlgorithm(newAlgorithm: AlgorithmType) {
         if (isProcessing.get()) {
             Log.i(
@@ -1739,7 +1755,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun executeAlgorithmSwitch(newAlgorithm: AlgorithmType) {
-        releaseCurrentAlgorithm()
+        // LLM系の画面どうしの切り替えでは、共有しているモデルを閉じずに使い回す
+        releaseCurrentAlgorithm(keepSharedLLM = newAlgorithm in LLM_ALGORITHMS)
         currentAlgorithm = newAlgorithm
         isInitialized = false
         isDownloadingModel.set(false)
@@ -1814,7 +1831,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun releaseCurrentAlgorithm(includeSpeech: Boolean = true) {
+    private fun releaseCurrentAlgorithm(includeSpeech: Boolean = true, keepSharedLLM: Boolean = false) {
         try {
             stopMicRecording(finalize = false)
             poseEstimatorSample.releasePoseEstimator()
@@ -1832,6 +1849,7 @@ class MainActivity : AppCompatActivity() {
             voiceSample.releaseVoice()
             almRecorder.cancelRecording()
             releaseLLMModels()
+            if (!keepSharedLLM) releaseSharedLLM()
         } catch (e: Exception) {
             Log.e("AILIA_Error", "Error releasing algorithms: ${e.message}")
         }

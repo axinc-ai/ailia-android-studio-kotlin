@@ -156,17 +156,28 @@ class AiliaToolUseSample {
                 return false
             }
 
-            Log.i(TAG, "Creating AiliaLLM instance...")
-            llm = AiliaLLM()
+            // mmprojは後から開けないため、LLM系のどの画面でも使えるよう常に開く
+            val projectorFileName = SharedLLM.projectorFileName(modelType, backend)
+            val projectorFile = projectorFileName?.let {
+                Log.i(TAG, "Downloading multimodal projector ($it) for ${backend.displayName}...")
+                downloadingFileName = it
+                SharedLLM.download(context, it, backend, listener)
+            }
+            if (projectorFileName != null && projectorFile == null) {
+                Log.e(TAG, "Failed to download multimodal projector")
+                downloadError = downloadError ?: "Failed to download $projectorFileName"
+                return false
+            }
 
-            Log.i(TAG, "Opening model file: $modelPath")
-            llm!!.openModelFile(modelPath!!, if (qnnFileName != null) N_CTX_QNN else N_CTX)
-            // Assistantは本体を開いた後、最初のプロンプト設定より前に開く
-            isMtpActive = mtpFile != null && LLMMtp.open(llm!!, mtpFile.absolutePath)
-            // ツール呼び出しの引数がぶれないよう、Tool Useではtemperatureを0にする
-            llm!!.setSamplingParams(40, 0.9f, TEMPERATURE, 1234)
-
-            llm!!.setTools(TOOLS_JSON)
+            llm = SharedLLM.acquire(
+                SharedLLM.Config(
+                    modelPath = modelPath!!,
+                    nCtx = if (qnnFileName != null) N_CTX_QNN else N_CTX,
+                    mtpPath = mtpFile?.absolutePath,
+                    projectorPath = projectorFile?.absolutePath,
+                )
+            )
+            isMtpActive = SharedLLM.isMtpActive
 
             conversationHistory = JSONArray()
             airConditionerTemperature = null
@@ -190,7 +201,9 @@ class AiliaToolUseSample {
             ModelDownloader.isLLMModelDownloaded(context, modelType.fileName)
         }
         val mtpDownloaded = mtpFileNameOrNull()?.let { LLMMtp.isDownloaded(context, it, backend) } ?: true
-        return modelDownloaded && mtpDownloaded
+        val projectorDownloaded = SharedLLM.projectorFileName(modelType, backend)
+            ?.let { SharedLLM.isDownloaded(context, it, backend) } ?: true
+        return modelDownloaded && mtpDownloaded && projectorDownloaded
     }
 
     /** 現在のバックエンドでダウンロードするモデルファイル名。 */
@@ -223,6 +236,10 @@ class AiliaToolUseSample {
             cancelRequested.set(false)
             val startTime = System.nanoTime()
 
+            // モデルは他の画面と共有しているため、この画面の設定を毎回設定し直す。
+            // ツール呼び出しの引数がぶれないよう、Tool Useではtemperatureを0にする
+            model.setSamplingParams(40, 0.9f, TEMPERATURE, 1234)
+            model.setTools(TOOLS_JSON)
             // Thinkingはプロンプトを設定する前に切り替える
             model.setThinking(thinking)
 
@@ -368,26 +385,15 @@ class AiliaToolUseSample {
 
     fun getLastResult(): String = lastResult
 
-    /** Releases the LLM resources. */
+    /** この画面の会話を破棄する。モデル自体は[SharedLLM]が保持し、他のLLM系の画面と使い回す。 */
     fun release() {
         cancelGeneration()
-        try {
-            // ツール設定は必ず解除してから破棄する
-            llm?.setTools(null)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error clearing tools: ${e.message}")
-        }
-        try {
-            llm?.destroy()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error releasing Tool Use: ${e.message}")
-        } finally {
-            llm = null
-            isInitialized = false
-            isMtpActive = false
-            modelPath = null
-            conversationHistory = JSONArray()
-            Log.i(TAG, "Tool Use released")
-        }
+        // モデル自体は[SharedLLM]が保持する。ツール定義は他の画面が使う前に各画面で設定し直す
+        llm = null
+        isInitialized = false
+        isMtpActive = false
+        modelPath = null
+        conversationHistory = JSONArray()
+        Log.i(TAG, "Tool Use released")
     }
 }
