@@ -301,6 +301,44 @@ object ModelDownloader {
         moveChecked(temp, metadataFile(file))
     }
 
+    /** 設定画面から削除できる変換済みQNNモデル(.qnn)の種類。 */
+    enum class QnnModelCategory {
+        /** ailia Speech (Speech2Text)の "whisper-*.qnn"。 */
+        SPEECH,
+
+        /** ailia LLM (LLM/VLM/ALM/Tool Use)の "gemma4-*.qnn"。 */
+        LLM,
+    }
+
+    /**
+     * ダウンロード済み(途中の ".qnn.download" を含む)のQNNモデルを列挙する。
+     * ailia Speechのモデルは "whisper" で始まり、それ以外はailia LLMのモデルとして扱う。
+     */
+    fun listQnnModelFiles(context: Context, category: QnnModelCategory): List<File> =
+        modelDirectory(context).listFiles().orEmpty()
+            .filter { it.isFile && (it.name.endsWith(".qnn") || it.name.endsWith(".qnn.download")) }
+            .filter { (it.name.startsWith("whisper")) == (category == QnnModelCategory.SPEECH) }
+            .sortedBy { it.name }
+
+    /** QNNモデルと、そのメタデータ・ダウンロード途中の一時ファイルを削除する。削除できなかったファイルを返す。 */
+    fun deleteQnnModelFiles(context: Context, category: QnnModelCategory): List<File> {
+        val failed = mutableListOf<File>()
+        for (file in listQnnModelFiles(context, category)) {
+            val model = if (file.name.endsWith(".download")) File(file.parentFile, file.name.removeSuffix(".download")) else file
+            val artifacts = listOf(
+                model,
+                metadataFile(model),
+                File(model.parentFile, "${model.name}.metadata.download"),
+                File(model.parentFile, "${model.name}.download"),
+            )
+            for (artifact in artifacts) {
+                if (artifact.exists() && !artifact.delete()) failed.add(artifact)
+            }
+            Log.i(TAG, "Deleted QNN model: ${model.absolutePath}")
+        }
+        return failed
+    }
+
     private fun moveChecked(source: File, destination: File) {
         if (destination.exists() && !destination.delete()) {
             error("Failed to replace ${destination.absolutePath}")
