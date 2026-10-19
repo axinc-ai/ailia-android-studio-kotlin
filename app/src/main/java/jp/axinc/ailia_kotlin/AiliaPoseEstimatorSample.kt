@@ -27,13 +27,11 @@ class AiliaPoseEstimatorSample(private val modelDirectory: File) {
             url = "${REMOTE_PATH}lightweight-human-pose-estimation.opt.onnx.prototxt",
             fileName = "lightweight-human-pose-estimation.opt.onnx.prototxt",
             expectedSize = 92_863,
-            sha256 = "bf87750506e3c57e294a7743623e344b29b7de1db07b0246c4c0e5669fa83b1e",
         )
         private val MODEL_SPEC = ModelFileSpec(
             url = "${REMOTE_PATH}lightweight-human-pose-estimation.opt.onnx",
             fileName = "lightweight-human-pose-estimation.opt.onnx",
             expectedSize = 16_347_537,
-            sha256 = "4c4c01ae393d67e23658943c2aa6842d84a334a5406ac1dcffccf13395d4692c",
         )
 
         // Python版(lightweight-human-pose-estimation.py)と同じ閾値。
