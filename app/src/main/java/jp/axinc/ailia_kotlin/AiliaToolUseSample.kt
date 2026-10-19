@@ -214,16 +214,27 @@ class AiliaToolUseSample {
 
                 var done = false
                 var generationSteps = 0
+                val partialResponse = StringBuilder()
                 while (!done && !cancelRequested.get() && generationSteps < MAX_GENERATION_STEPS) {
                     done = model.generate()
                     generationSteps++
                     val token = model.getDeltaText()
                     if (token.isNotEmpty()) {
+                        partialResponse.append(token)
                         listener?.onToken(token)
                     }
                 }
                 if (cancelRequested.get()) {
-                    rollbackHistory(historySizeBeforeRequest)
+                    // 中断した回も画面に残るため、途中までの応答を履歴に積んで次の発言の文脈にする。
+                    // 実行済みのツール呼び出しと結果も残す(エアコンの状態は既に変わっている)。
+                    // このリクエストで何も生成していなければ送信前の状態に戻す
+                    if (partialResponse.isNotEmpty()) {
+                        conversationHistory.put(
+                            JSONObject().put("role", "assistant").put("content", partialResponse.toString())
+                        )
+                    } else if (turn == 0) {
+                        rollbackHistory(historySizeBeforeRequest)
+                    }
                     listener?.onError("Generation cancelled")
                     return -1
                 }
