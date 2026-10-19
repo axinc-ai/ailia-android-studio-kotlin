@@ -225,6 +225,73 @@
                 android:textSize="13sp"
                 android:visibility="gone" />
 
+            <!-- ダウンロード済みのQNNモデル(.qnn)の削除。Speech2TextとLLM系を独立して削除できる -->
+            <TextView
+                android:id="@+id/settingsDeleteQnnLabel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:layout_marginBottom="8dp"
+                android:text="Delete QNN Model"
+                android:textColor="?android:attr/textColorPrimary"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/settingsSpeechQnnLabel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Speech2Text"
+                android:textColor="?android:attr/textColorPrimary"
+                android:textSize="16sp"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/settingsSpeechQnnFilesTextView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="?android:attr/textColorSecondary"
+                android:textSize="13sp"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/settingsSpeechQnnDeleteButton"
+                android:layout_width="wrap_content"
+                android:layout_height="48dp"
+                android:layout_marginBottom="8dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="Delete"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/settingsLlmQnnLabel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="LLM / VLM / ALM"
+                android:textColor="?android:attr/textColorPrimary"
+                android:textSize="16sp"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/settingsLlmQnnFilesTextView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="?android:attr/textColorSecondary"
+                android:textSize="13sp"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/settingsLlmQnnDeleteButton"
+                android:layout_width="wrap_content"
+                android:layout_height="48dp"
+                android:layout_marginBottom="8dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="Delete"
+                android:visibility="gone" />
+
             <!-- LLM/VLM/ALMのバックエンド選択。生成中は切り替えられないため画面上部に置く -->
             <Spinner
                 android:id="@+id/llmEnvSpinner"

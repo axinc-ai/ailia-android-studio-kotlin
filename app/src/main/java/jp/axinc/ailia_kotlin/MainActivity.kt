@@ -14,6 +14,7 @@ import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import androidx.camera.core.*
@@ -73,6 +74,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var settingsQnnFormatLabel: TextView
     private lateinit var settingsQnnFormatRadioGroup: RadioGroup
     private lateinit var settingsQnnFormatNoteTextView: TextView
+    private lateinit var settingsDeleteQnnLabel: TextView
+    private lateinit var settingsSpeechQnnLabel: TextView
+    private lateinit var settingsSpeechQnnFilesTextView: TextView
+    private lateinit var settingsSpeechQnnDeleteButton: Button
+    private lateinit var settingsLlmQnnLabel: TextView
+    private lateinit var settingsLlmQnnFilesTextView: TextView
+    private lateinit var settingsLlmQnnDeleteButton: Button
     private lateinit var almInputModeRadioGroup: RadioGroup
     private lateinit var almWavRadioButton: RadioButton
     private lateinit var almMicRadioButton: RadioButton
@@ -374,6 +382,19 @@ class MainActivity : AppCompatActivity() {
         settingsQnnFormatLabel = findViewById(R.id.settingsQnnFormatLabel)
         settingsQnnFormatRadioGroup = findViewById(R.id.settingsQnnFormatRadioGroup)
         settingsQnnFormatNoteTextView = findViewById(R.id.settingsQnnFormatNoteTextView)
+        settingsDeleteQnnLabel = findViewById(R.id.settingsDeleteQnnLabel)
+        settingsSpeechQnnLabel = findViewById(R.id.settingsSpeechQnnLabel)
+        settingsSpeechQnnFilesTextView = findViewById(R.id.settingsSpeechQnnFilesTextView)
+        settingsSpeechQnnDeleteButton = findViewById(R.id.settingsSpeechQnnDeleteButton)
+        settingsLlmQnnLabel = findViewById(R.id.settingsLlmQnnLabel)
+        settingsLlmQnnFilesTextView = findViewById(R.id.settingsLlmQnnFilesTextView)
+        settingsLlmQnnDeleteButton = findViewById(R.id.settingsLlmQnnDeleteButton)
+        settingsSpeechQnnDeleteButton.setOnClickListener {
+            confirmDeleteQnnModels(ModelDownloader.QnnModelCategory.SPEECH, "Speech2Text")
+        }
+        settingsLlmQnnDeleteButton.setOnClickListener {
+            confirmDeleteQnnModels(ModelDownloader.QnnModelCategory.LLM, "LLM / VLM / ALM")
+        }
         settingsQnnFormatRadioGroup.setOnCheckedChangeListener { _, checkedId ->
             // QNNモデルのフォーマットはメモリ上だけで保持し、再起動でv1.5.1に戻す
             val format = if (checkedId == R.id.settingsQnnFormatV150RadioButton) {
@@ -926,7 +947,54 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
+    /** Settingsに表示するダウンロード済みQNNモデルの一覧を更新する。 */
+    private fun refreshQnnModelFileLists() {
+        fun update(category: ModelDownloader.QnnModelCategory, textView: TextView, button: Button) {
+            val files = ModelDownloader.listQnnModelFiles(this, category)
+            textView.text = if (files.isEmpty()) {
+                "No downloaded QNN models"
+            } else {
+                files.joinToString("\n") { file ->
+                    val partial = if (file.name.endsWith(".download")) " (partial)" else ""
+                    "${file.name.removeSuffix(".download")} - ${formatFileSize(file.length())}$partial"
+                }
+            }
+            button.isEnabled = files.isNotEmpty()
+        }
+        update(ModelDownloader.QnnModelCategory.SPEECH, settingsSpeechQnnFilesTextView, settingsSpeechQnnDeleteButton)
+        update(ModelDownloader.QnnModelCategory.LLM, settingsLlmQnnFilesTextView, settingsLlmQnnDeleteButton)
+    }
+
+    private fun formatFileSize(bytes: Long): String {
+        val mb = bytes / (1024.0 * 1024.0)
+        return if (mb >= 1024) String.format(Locale.ROOT, "%.2f GB", mb / 1024) else String.format(Locale.ROOT, "%.0f MB", mb)
+    }
+
+    /** 確認ダイアログを出してから、指定した種類のQNNモデルを削除する。 */
+    private fun confirmDeleteQnnModels(category: ModelDownloader.QnnModelCategory, title: String) {
+        val files = ModelDownloader.listQnnModelFiles(this, category)
+        if (files.isEmpty()) return
+        val totalSize = formatFileSize(files.sumOf { it.length() })
+        AlertDialog.Builder(this)
+            .setTitle("Delete $title QNN models?")
+            .setMessage(files.joinToString("\n") { it.name } + "\n\nTotal: $totalSize")
+            .setPositiveButton("Delete") { _, _ -> deleteQnnModels(category) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun deleteQnnModels(category: ModelDownloader.QnnModelCategory) {
+        // 開いているモデルが削除対象のファイルを参照しないよう、先に解放する
+        when (category) {
+            ModelDownloader.QnnModelCategory.SPEECH -> speechSample.releaseSpeech()
+            ModelDownloader.QnnModelCategory.LLM -> releaseLLMSamples()
+        }
+        val failed = ModelDownloader.deleteQnnModelFiles(this, category)
+        refreshQnnModelFileLists()
+        val message = if (failed.isEmpty()) "Deleted QNN models" else "Failed to delete: ${failed.joinToString { it.name }}"
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    }
+
     /** LLM系の初期化失敗時の表示。ダウンロードに失敗した場合はその理由を優先して表示する。 */
     private fun llmInitFailedStatus(downloadError: String?): String =
         if (downloadError != null) "Status: Model download failed - $downloadError" else "Status: Initialization failed"
@@ -1251,6 +1319,13 @@ class MainActivity : AppCompatActivity() {
         settingsQnnFormatLabel,
         settingsQnnFormatRadioGroup,
         settingsQnnFormatNoteTextView,
+        settingsDeleteQnnLabel,
+        settingsSpeechQnnLabel,
+        settingsSpeechQnnFilesTextView,
+        settingsSpeechQnnDeleteButton,
+        settingsLlmQnnLabel,
+        settingsLlmQnnFilesTextView,
+        settingsLlmQnnDeleteButton,
         toolUseThinkingSwitch,
         llmBenchmarkButton,
         almInputModeRadioGroup,
@@ -1426,6 +1501,13 @@ class MainActivity : AppCompatActivity() {
                 settingsQnnFormatLabel,
                 settingsQnnFormatRadioGroup,
                 settingsQnnFormatNoteTextView,
+                settingsDeleteQnnLabel,
+                settingsSpeechQnnLabel,
+                settingsSpeechQnnFilesTextView,
+                settingsSpeechQnnDeleteButton,
+                settingsLlmQnnLabel,
+                settingsLlmQnnFilesTextView,
+                settingsLlmQnnDeleteButton,
             ),
         )
     }
@@ -1454,6 +1536,8 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.SPEECH_TO_TEXT -> {
                 classificationResultTextView.text = "Speech Result: --"
             }
+
+            AlgorithmType.SETTINGS -> refreshQnnModelFileLists()
 
             AlgorithmType.LLM -> {
                 llmInputEditText.setText("Hello!")
