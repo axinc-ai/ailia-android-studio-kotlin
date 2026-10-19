@@ -1,6 +1,7 @@
 package jp.axinc.ailia_kotlin
 
 import android.content.Context
+import android.util.Base64
 import android.util.Log
 import java.io.File
 import java.io.FileInputStream
@@ -132,59 +133,42 @@ object ModelDownloader {
                 listener?.onComplete(file)
                 return file
             }
-            deleteInvalidArtifacts(file, keepTempFile = true)
+            deleteInvalidArtifacts(file)
 
-            // 中断された一時ファイルが残っていればRangeリクエストで続きから再開する
+            // 途中のファイルから再開すると、その間にサーバー側のファイルが差し替わった場合や
+            // 配信キャッシュに古い内容が残っている場合に新旧が混ざるため、常に最初から取り直す
             val tempFile = File(directory, "${spec.fileName}.download")
-            var resumeOffset = if (tempFile.isFile) tempFile.length() else 0L
-            if (spec.expectedSize != null && resumeOffset > spec.expectedSize) {
-                check(tempFile.delete()) { "Failed to remove oversized temporary file: ${tempFile.absolutePath}" }
-                resumeOffset = 0L
-            }
-
             val connection = (URL(spec.url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 30_000
                 readTimeout = 120_000
                 requestMethod = "GET"
                 instanceFollowRedirects = true
-                if (resumeOffset > 0) {
-                    setRequestProperty("Range", "bytes=$resumeOffset-")
-                }
                 connect()
             }
             try {
-                val resumed = resumeOffset > 0 &&
-                    connection.responseCode == HttpURLConnection.HTTP_PARTIAL
-                if (connection.responseCode != HttpURLConnection.HTTP_OK && !resumed) {
-                    // 再開リクエストが拒否された場合(416など)は一時ファイルを破棄して次回最初から取り直す
-                    if (resumeOffset > 0 && tempFile.exists() && !tempFile.delete()) {
-                        Log.w(TAG, "Failed to delete ${tempFile.absolutePath}")
-                    }
+                if (connection.responseCode != HttpURLConnection.HTTP_OK) {
                     error("HTTP ${connection.responseCode} for ${spec.url}")
-                }
-                if (!resumed) {
-                    // サーバーがRangeに対応しない場合などは最初からダウンロードし直す
-                    if (tempFile.exists() && !tempFile.delete()) {
-                        error("Failed to remove stale temporary file: ${tempFile.absolutePath}")
-                    }
-                    resumeOffset = 0L
-                } else {
-                    Log.i(TAG, "Resuming download of ${spec.fileName} from $resumeOffset bytes")
                 }
                 val responseSize = connection.getHeaderField("Content-Length")?.toLongOrNull()
                     ?.takeIf { it >= 0 }
-                val requiredSize = spec.expectedSize ?: responseSize?.plus(resumeOffset)
+                val requiredSize = spec.expectedSize ?: responseSize
+                // Google Cloud Storageはファイル全体のMD5を x-goog-hash で返す
+                val expectedMd5 = googMd5(connection.headerFields)
 
-                var downloaded = resumeOffset
+                val sha256 = MessageDigest.getInstance("SHA-256")
+                val md5 = MessageDigest.getInstance("MD5")
+                var downloaded = 0L
                 var lastReported = -1L
                 connection.inputStream.use { input ->
-                    FileOutputStream(tempFile, resumed).use { output ->
+                    FileOutputStream(tempFile).use { output ->
                         val buffer = ByteArray(BUFFER_SIZE)
                         while (true) {
                             val count = input.read(buffer)
                             if (count < 0) break
                             if (count == 0) continue
                             output.write(buffer, 0, count)
+                            sha256.update(buffer, 0, count)
+                            md5.update(buffer, 0, count)
                             downloaded += count
                             if (downloaded - lastReported >= PROGRESS_STEP_BYTES) {
                                 listener?.onProgress(downloaded, requiredSize ?: -1L)
@@ -200,7 +184,12 @@ object ModelDownloader {
                 check(requiredSize == null || downloaded == requiredSize) {
                     "Size mismatch for ${spec.fileName}: expected=$requiredSize actual=$downloaded"
                 }
-                val actualSha256 = sha256(tempFile)
+                val actualMd5 = md5.digest().toHex()
+                check(expectedMd5 == null || actualMd5.equals(expectedMd5, ignoreCase = true)) {
+                    "MD5 mismatch for ${spec.fileName}: expected=$expectedMd5 actual=$actualMd5"
+                }
+                if (expectedMd5 == null) Log.w(TAG, "No MD5 from server, skipped MD5 check: ${spec.fileName}")
+                val actualSha256 = sha256.digest().toHex()
                 check(spec.sha256 == null || actualSha256.equals(spec.sha256, ignoreCase = true)) {
                     "SHA-256 mismatch for ${spec.fileName}"
                 }
@@ -214,11 +203,27 @@ object ModelDownloader {
                 connection.disconnect()
             }
         } catch (e: Exception) {
-            // 通信断などによる失敗時は一時ファイルを残し、次回のダウンロードで再開する
-            deleteInvalidArtifacts(file, keepTempFile = true)
+            // 次回は最初から取り直すため、一時ファイルも残さない
+            deleteInvalidArtifacts(file)
             val error = "Download failed for ${spec.fileName}: ${e.message}"
             Log.e(TAG, error, e)
             listener?.onError(error)
+            null
+        }
+    }
+
+    /** x-goog-hash ヘッダ("crc32c=...,md5=..."、複数行の場合あり)からMD5を16進文字列で取り出す。 */
+    private fun googMd5(headers: Map<String?, List<String>>): String? {
+        val values = headers.entries
+            .filter { it.key.equals("x-goog-hash", ignoreCase = true) }
+            .flatMap { it.value }
+            .flatMap { it.split(",") }
+        val encoded = values.map(String::trim).firstOrNull { it.startsWith("md5=") }?.removePrefix("md5=")
+            ?: return null
+        return try {
+            Base64.decode(encoded, Base64.NO_WRAP).toHex()
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "Invalid MD5 in x-goog-hash: $encoded")
             null
         }
     }
@@ -348,16 +353,13 @@ object ModelDownloader {
         }
     }
 
-    private fun deleteInvalidArtifacts(file: File, keepTempFile: Boolean = false) {
-        val artifacts = mutableListOf(
+    private fun deleteInvalidArtifacts(file: File) {
+        listOf(
             file,
             metadataFile(file),
             File(file.parentFile, "${file.name}.metadata.download"),
+            File(file.parentFile, "${file.name}.download"),
         )
-        if (!keepTempFile) {
-            artifacts.add(File(file.parentFile, "${file.name}.download"))
-        }
-        artifacts
             .filter(File::exists)
             .forEach { artifact ->
                 if (!artifact.delete()) Log.w(TAG, "Failed to delete ${artifact.absolutePath}")
