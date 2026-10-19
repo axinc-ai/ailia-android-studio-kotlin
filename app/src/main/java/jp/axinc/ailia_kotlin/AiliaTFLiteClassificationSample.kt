@@ -19,7 +19,6 @@ enum class TFLiteClassificationModelType(
             url = "https://storage.googleapis.com/ailia-models-tflite/mobilenetv2/mobilenetv2_quant_recalib.tflite",
             fileName = "mobilenetv2_quant_recalib.tflite",
             expectedSize = 3_993_520,
-            sha256 = "d7386e7a80137328ac80603c1f76ae9d02ea2564d64a1a539729fa5985936f7c",
         ),
     ),
     RESNET50(

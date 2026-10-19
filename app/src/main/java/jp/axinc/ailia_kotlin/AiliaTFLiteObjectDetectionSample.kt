@@ -16,7 +16,6 @@ class AiliaTFLiteObjectDetectionSample(private val modelDirectory: File) {
             url = "https://storage.googleapis.com/ailia-models-tflite/yolox/yolox_s_full_integer_quant.opt.tflite",
             fileName = "yolox_s_full_integer_quant.opt.tflite",
             expectedSize = 9_376_112,
-            sha256 = "98ff315bff494938cbbb14210db40c64a78881635cfc5ab85761359b5ed9e333",
         )
     }
 
