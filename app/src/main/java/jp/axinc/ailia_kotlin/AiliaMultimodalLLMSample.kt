@@ -172,23 +172,16 @@ class AiliaMultimodalLLMSample(
             sampleMediaPath = sampleMediaFile.absolutePath
             Log.i(TAG, "Sample media ready: $sampleMediaPath")
 
-            // Create AiliaLLM instance
-            Log.i(TAG, "Creating AiliaLLM instance...")
-            llm = AiliaLLM()
-
-            // Open model file
-            Log.i(TAG, "Opening model file: $modelPath")
-            llm!!.openModelFile(modelPath!!, if (useQnn) N_CTX_QNN else N_CTX)
-
-            // MTP assistant must be opened before the multimodal projector and the first prompt
-            isMtpActive = mtpFile != null && LLMMtp.open(llm!!, mtpFile.absolutePath)
-
-            // Open multimodal projector
-            Log.i(TAG, "Opening multimodal projector: $projectorPath")
-            llm!!.openMultimodalProjectorFile(projectorPath!!)
-
-            // Set default sampling parameters
-            llm!!.setSamplingParams(40, 0.9f, 0.4f, 1234)
+            // LLM系の他の画面と同じモデル・MTP・mmprojなら開いているモデルを使い回す
+            llm = SharedLLM.acquire(
+                SharedLLM.Config(
+                    modelPath = modelPath!!,
+                    nCtx = if (useQnn) N_CTX_QNN else N_CTX,
+                    mtpPath = mtpFile?.absolutePath,
+                    projectorPath = projectorPath!!,
+                )
+            )
+            isMtpActive = SharedLLM.isMtpActive
 
             // Check multimodal capabilities
             val capabilities = llm!!.getMultimodalCapabilities()
@@ -326,6 +319,11 @@ class AiliaMultimodalLLMSample(
             }
             conversationHistory.add(userMessage)
 
+            // モデルは他の画面と共有しているため、この画面の設定を毎回設定し直す
+            llm!!.setSamplingParams(40, 0.9f, 0.4f, 1234)
+            llm!!.setTools(null)
+            llm!!.setThinking(false)
+
             // Set the multimodal prompt (media encoding takes a while on mobile CPUs)
             Log.i(TAG, "chatWithMedia: calling setPrompt with ${conversationHistory.size} messages...")
             if (attachMedia) listener?.onStatus("Processing ${mediaType.mediaType}...")
@@ -455,25 +453,19 @@ class AiliaMultimodalLLMSample(
     }
 
     /**
-     * Releases the LLM resources.
+     * この画面の会話を破棄する。モデル自体は[SharedLLM]が保持し、他のLLM系の画面と使い回す。
      */
     fun release() {
         cancelGeneration()
-        try {
-            llm?.destroy()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error releasing multimodal LLM: ${e.message}")
-        } finally {
-            llm = null
-            isInitialized = false
-            isMtpActive = false
-            modelPath = null
-            projectorPath = null
-            sampleMediaPath = null
-            conversationHistory.clear()
-            mediaSent = false
-            Log.i(TAG, "Multimodal LLM released")
-        }
+        llm = null
+        isInitialized = false
+        isMtpActive = false
+        modelPath = null
+        projectorPath = null
+        sampleMediaPath = null
+        conversationHistory.clear()
+        mediaSent = false
+        Log.i(TAG, "Multimodal LLM released")
     }
 
     /**

@@ -219,16 +219,28 @@ class AiliaLLMSample {
                 return false
             }
 
-            Log.i(TAG, "Creating AiliaLLM instance...")
-            llm = AiliaLLM()
+            // mmprojは後から開けないため、LLM系のどの画面でも使えるよう常に開く
+            val projectorFileName = SharedLLM.projectorFileName(modelType, backend)
+            val projectorFile = projectorFileName?.let {
+                Log.i(TAG, "Downloading multimodal projector ($it) for ${backend.displayName}...")
+                downloadingFileName = it
+                SharedLLM.download(context, it, backend, listener)
+            }
+            if (projectorFileName != null && projectorFile == null) {
+                Log.e(TAG, "Failed to download multimodal projector")
+                downloadError = downloadError ?: "Failed to download $projectorFileName"
+                return false
+            }
 
-            Log.i(TAG, "Opening model file: $modelPath")
-            llm!!.openModelFile(modelPath!!, if (qnnFileName != null) N_CTX_QNN else N_CTX)
-            // Assistantは本体を開いた後、最初のプロンプト設定より前に開く
-            isMtpActive = mtpFile != null && LLMMtp.open(llm!!, mtpFile.absolutePath)
-
-            // Set default sampling parameters
-            llm!!.setSamplingParams(40, 0.9f, 0.4f, 1234)
+            llm = SharedLLM.acquire(
+                SharedLLM.Config(
+                    modelPath = modelPath!!,
+                    nCtx = if (qnnFileName != null) N_CTX_QNN else N_CTX,
+                    mtpPath = mtpFile?.absolutePath,
+                    projectorPath = projectorFile?.absolutePath,
+                )
+            )
+            isMtpActive = SharedLLM.isMtpActive
 
             // Add system prompt
             conversationHistory.clear()
@@ -256,7 +268,9 @@ class AiliaLLMSample {
             ModelDownloader.isLLMModelDownloaded(context, modelType.fileName)
         }
         val mtpDownloaded = mtpFileNameOrNull()?.let { LLMMtp.isDownloaded(context, it, backend) } ?: true
-        return modelDownloaded && mtpDownloaded
+        val projectorDownloaded = SharedLLM.projectorFileName(modelType, backend)
+            ?.let { SharedLLM.isDownloaded(context, it, backend) } ?: true
+        return modelDownloaded && mtpDownloaded && projectorDownloaded
     }
 
     /**
@@ -305,6 +319,11 @@ class AiliaLLMSample {
 
             // Add user message to conversation history
             conversationHistory.add(AiliaLLMChatMessage("user", userInput))
+
+            // モデルは他の画面と共有しているため、この画面の設定を毎回設定し直す
+            llm!!.setSamplingParams(40, 0.9f, 0.4f, 1234)
+            llm!!.setTools(null)
+            llm!!.setThinking(false)
 
             // Set the prompt
             llm!!.setPrompt(conversationHistory.toTypedArray())
@@ -430,21 +449,15 @@ class AiliaLLMSample {
     }
 
     /**
-     * Releases the LLM resources.
+     * この画面の会話を破棄する。モデル自体は[SharedLLM]が保持し、他のLLM系の画面と使い回す。
      */
     fun release() {
         cancelGeneration()
-        try {
-            llm?.destroy()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error releasing LLM: ${e.message}")
-        } finally {
-            llm = null
-            isInitialized = false
-            isMtpActive = false
-            modelPath = null
-            conversationHistory.clear()
-            Log.i(TAG, "LLM released")
-        }
+        llm = null
+        isInitialized = false
+        isMtpActive = false
+        modelPath = null
+        conversationHistory.clear()
+        Log.i(TAG, "LLM released")
     }
 }
