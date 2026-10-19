@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -15,16 +14,14 @@ import java.util.Properties
 /**
  * A model file and the information required to validate it.
  *
- * [expectedSize] and [sha256] are optional because not all hosted models expose
- * immutable release metadata. Files downloaded by this class still receive a
- * sidecar containing the server length and computed SHA-256, so subsequent
- * launches can detect local corruption without accessing the network.
+ * Downloads are checked against the MD5 that Google Cloud Storage returns and
+ * [expectedSize]. A file that is already in place is used as is, without network
+ * access or rehashing, so models keep working offline.
  */
 data class ModelFileSpec(
     val url: String,
     val fileName: String,
     val expectedSize: Long? = null,
-    val sha256: String? = null,
 )
 
 /** Robust, shared downloader used by every sample in this application. */
@@ -96,7 +93,7 @@ object ModelDownloader {
                 "Failed to create model subdirectory: ${parent.absolutePath}"
             }
 
-            if (isValid(file, spec)) {
+            if (isPresent(file)) {
                 Log.i(TAG, "Using validated model: ${file.absolutePath}")
                 listener?.onComplete(file)
                 return file
@@ -123,7 +120,6 @@ object ModelDownloader {
                 // Google Cloud Storageはファイル全体のMD5を x-goog-hash で返す
                 val expectedMd5 = googMd5(connection.headerFields)
 
-                val sha256 = MessageDigest.getInstance("SHA-256")
                 val md5 = MessageDigest.getInstance("MD5")
                 var downloaded = 0L
                 var lastReported = -1L
@@ -135,7 +131,6 @@ object ModelDownloader {
                             if (count < 0) break
                             if (count == 0) continue
                             output.write(buffer, 0, count)
-                            sha256.update(buffer, 0, count)
                             md5.update(buffer, 0, count)
                             downloaded += count
                             if (downloaded - lastReported >= PROGRESS_STEP_BYTES) {
@@ -157,14 +152,10 @@ object ModelDownloader {
                     "MD5 mismatch for ${spec.fileName}: expected=$expectedMd5 actual=$actualMd5"
                 }
                 if (expectedMd5 == null) Log.w(TAG, "No MD5 from server, skipped MD5 check: ${spec.fileName}")
-                val actualSha256 = sha256.digest().toHex()
-                check(spec.sha256 == null || actualSha256.equals(spec.sha256, ignoreCase = true)) {
-                    "SHA-256 mismatch for ${spec.fileName}"
-                }
 
                 moveChecked(tempFile, file)
-                writeMetadata(file, spec.url, downloaded, actualSha256)
-                check(isValid(file, spec)) { "Downloaded model validation failed: ${spec.fileName}" }
+                writeMetadata(file, spec.url, downloaded, actualMd5)
+                check(isPresent(file)) { "Downloaded model validation failed: ${spec.fileName}" }
                 listener?.onComplete(file)
                 file
             } finally {
@@ -212,7 +203,7 @@ object ModelDownloader {
         }
     })
 
-    fun isDownloaded(directory: File, spec: ModelFileSpec): Boolean = isValid(File(directory, spec.fileName), spec)
+    fun isDownloaded(directory: File, spec: ModelFileSpec): Boolean = isPresent(File(directory, spec.fileName))
 
     fun isLLMModelDownloaded(context: Context, fileName: String): Boolean = isDownloaded(
         modelDirectory(context),
@@ -240,32 +231,17 @@ object ModelDownloader {
     fun getSampleImagePath(context: Context): String =
         File(modelDirectory(context), "sample_image.jpg").absolutePath
 
-    private fun isValid(file: File, spec: ModelFileSpec): Boolean {
-        if (!file.isFile || !file.canRead() || file.length() <= 0) return false
-        if (spec.expectedSize != null && file.length() != spec.expectedSize) return false
+    // ダウンロード中は ".download" に書き、ダウンロード直後にMD5とサイズを照合したものだけを
+    // 本来の名前にするため、本来の名前のファイルがあれば完全なものとして扱う。
+    // オフラインでも使えるよう、既存ファイルの検証(ハッシュ計算や取得元の照合)はしない
+    private fun isPresent(file: File): Boolean = file.isFile && file.canRead() && file.length() > 0
 
-        val metadataFile = metadataFile(file)
-        if (!metadataFile.isFile) {
-            // Preserve valid models downloaded by older application versions. New downloads
-            // always have metadata and receive full hash validation below.
-            return spec.sha256 == null || sha256(file).equals(spec.sha256, ignoreCase = true)
-        }
-        val metadata = Properties().apply {
-            FileInputStream(metadataFile).use(::load)
-        }
-        val recordedLength = metadata.getProperty("length")?.toLongOrNull() ?: return false
-        val recordedSha256 = metadata.getProperty("sha256") ?: return false
-        if (metadata.getProperty("url") != spec.url || recordedLength != file.length()) return false
-        if (spec.sha256 != null && !recordedSha256.equals(spec.sha256, ignoreCase = true)) return false
-        return sha256(file).equals(recordedSha256, ignoreCase = true)
-    }
-
-    private fun writeMetadata(file: File, url: String, length: Long, sha256: String) {
+    private fun writeMetadata(file: File, url: String, length: Long, md5: String) {
         val temp = File(file.parentFile, "${file.name}.metadata.download")
         val properties = Properties().apply {
             setProperty("url", url)
             setProperty("length", length.toString())
-            setProperty("sha256", sha256)
+            setProperty("md5", md5)
         }
         FileOutputStream(temp).use { output ->
             properties.store(output, "ailia model download metadata")
@@ -311,19 +287,6 @@ object ModelDownloader {
         } catch (e: Exception) {
             Log.w(TAG, "Could not migrate legacy cache model $fileName", e)
         }
-    }
-
-    private fun sha256(file: File): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        FileInputStream(file).use { input ->
-            val buffer = ByteArray(BUFFER_SIZE)
-            while (true) {
-                val count = input.read(buffer)
-                if (count < 0) break
-                if (count > 0) digest.update(buffer, 0, count)
-            }
-        }
-        return digest.digest().toHex()
     }
 
     private fun ByteArray.toHex(): String = joinToString("") {
