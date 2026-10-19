@@ -42,6 +42,11 @@ class AiliaToolUseSample {
     var downloadingFileName: String? = null
         private set
 
+    /** 直前の[initialize]でモデルのダウンロードに失敗した理由。失敗していなければnull。 */
+    @Volatile
+    var downloadError: String? = null
+        private set
+
     /** ツールで設定したエアコンの温度(摂氏)。未設定ならnull。 */
     var airConditionerTemperature: Double? = null
         private set
@@ -106,6 +111,8 @@ class AiliaToolUseSample {
         context: Context,
         progressListener: ModelDownloader.DownloadListener? = null,
     ): Boolean {
+        downloadError = null
+        val listener = ModelDownloader.recordingErrors(progressListener) { downloadError = it }
         return try {
             if (isInitialized) {
                 release()
@@ -113,9 +120,10 @@ class AiliaToolUseSample {
 
             Log.i(TAG, "Downloading ${modelType.displayName} model (${modelType.fileName})...")
             downloadingFileName = modelType.fileName
-            val modelFile = ModelDownloader.downloadLLMModel(context, modelType.fileName, progressListener)
+            val modelFile = ModelDownloader.downloadLLMModel(context, modelType.fileName, listener)
             if (modelFile == null) {
                 Log.e(TAG, "Failed to download model")
+                downloadError = downloadError ?: "Failed to download ${modelType.fileName}"
                 return false
             }
             modelPath = modelFile.absolutePath
@@ -124,10 +132,11 @@ class AiliaToolUseSample {
             val mtpFile = mtpFileName?.let {
                 Log.i(TAG, "Downloading MTP assistant ($it)...")
                 downloadingFileName = it
-                ModelDownloader.downloadLLMModel(context, it, progressListener)
+                ModelDownloader.downloadLLMModel(context, it, listener)
             }
             if (mtpFileName != null && mtpFile == null) {
                 Log.e(TAG, "Failed to download MTP assistant")
+                downloadError = downloadError ?: "Failed to download $mtpFileName"
                 return false
             }
 

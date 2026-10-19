@@ -802,6 +802,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** LLM系の初期化失敗時の表示。ダウンロードに失敗した場合はその理由を優先して表示する。 */
+    private fun llmInitFailedStatus(downloadError: String?): String =
+        if (downloadError != null) "Status: Model download failed - $downloadError" else "Status: Initialization failed"
+
     /**
      * LLM系のモデルを解放する。MTPの切り替え時に呼び出す。
      * MTPのAssistantはインスタンスを作り直さないと外せないため、次のSend押下時に初期化し直す。
@@ -2116,7 +2120,7 @@ class MainActivity : AppCompatActivity() {
                         if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
                         isInitialized = false
                         setLLMGenerating(false)
-                        llmStatusTextView.text = "Status: Initialization failed"
+                        llmStatusTextView.text = llmInitFailedStatus(llmSample.downloadError)
                         hideModelDownloadProgress()
                         setLLMControlsEnabled(true)
                         finishModelOperation(operationId)
@@ -2248,7 +2252,7 @@ class MainActivity : AppCompatActivity() {
                         if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
                         isInitialized = false
                         setLLMGenerating(false)
-                        llmStatusTextView.text = "Status: Initialization failed"
+                        llmStatusTextView.text = llmInitFailedStatus(toolUseSample.downloadError)
                         hideModelDownloadProgress()
                         setLLMControlsEnabled(true)
                         finishModelOperation(operationId)
@@ -2448,7 +2452,7 @@ class MainActivity : AppCompatActivity() {
                         runOnUiThreadIfActive {
                             if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
                             isInitialized = false
-                            llmStatusTextView.text = "Status: Initialization failed"
+                            llmStatusTextView.text = llmInitFailedStatus(multimodalLLMSample.downloadError)
                             setLLMGenerating(false)
                             setLLMControlsEnabled(true)
                             hideModelDownloadProgress()
@@ -2684,7 +2688,7 @@ class MainActivity : AppCompatActivity() {
                         if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
                         isInitialized = false
                         setLLMGenerating(false)
-                        llmStatusTextView.text = "Status: Initialization failed"
+                        llmStatusTextView.text = llmInitFailedStatus(almSample.downloadError)
                         setLLMControlsEnabled(true)
                         hideModelDownloadProgress()
                         finishModelOperation(operationId)
