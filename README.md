@@ -39,6 +39,29 @@ Models bundled in `res/raw` run without a download. Other models are downloaded 
 | Multimodal LLM (VLM) | [Gemma 4 E2B / E4B + mmproj](app/src/main/java/jp/axinc/ailia_kotlin/AiliaMultimodalLLMSample.kt) | ailia LLM (CPU / QNN) |
 | Audio LLM (ALM) | [Gemma 4 E2B / E4B + mmproj](app/src/main/java/jp/axinc/ailia_kotlin/AiliaMultimodalLLMSample.kt) | ailia LLM (CPU / QNN) |
 | Tool Use | [Gemma 4 E2B / E4B + air conditioner tool](app/src/main/java/jp/axinc/ailia_kotlin/AiliaToolUseSample.kt) | ailia LLM (CPU / QNN) |
+| Voice Agent | [Whisper Large V3 Turbo → Gemma 4 E2B → GPT-SoVITS V2-Pro Distill Base](app/src/main/java/jp/axinc/ailia_kotlin/AiliaVoiceAgentSample.kt) | ailia AI Speech + ailia LLM + ailia AI Voice |
+
+## Voice Agent
+
+Select **Voice Agent** below **ToolUse**. Choose each model's backend separately, then press **開始** and grant microphone access. Speech offers available ailia environments plus a converted QNN model on supported SoCs; Gemma offers CPU / supported QNN; synthesis offers available ailia environments (QNN requires FP16 support).
+
+For a repeatable test, select **テスト：GPT-SoVITS合成音声** and enter one query per line. The defaults request a self-introduction and ask what one plus one is. The selected GPT-SoVITS backend synthesizes and plays each query, passes the generated PCM directly to Whisper, then runs the same Gemma response and GPT-SoVITS playback path as microphone mode. Query text is never passed directly to Gemma. Microphone access is not requested or used during the automated test. Each query runs once in order; after the final answer the character continues its gentle idle motion and the last recognized query and answer remain visible until **×** is pressed. Cancelling a test switches to microphone mode and requests microphone permission if needed. All three backend selections still apply.
+
+After installing the app and Android test APKs on a supported device with the QNN models cached, run the same two synthesized queries through the public session API:
+
+```shell
+adb shell am instrument -w -e class jp.axinc.ailia_kotlin.VoiceAgentInstrumentedTest#synthesizedQueriesCompleteTwoVoiceTurns -e voiceAgentNative true ai.ailia.ailia_kotlin_qnn.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+The test checks recognition, both responses, stage transitions and completion without microphone capture. It saves the original queries, recognized text, answers and states to `voice-agent-synthesized-test.json` in the app's external files directory.
+
+The first start downloads the selected models and dictionaries into the shared model directory. The CPU Whisper encoder alone has approximately 2.5 GB of external weights; allow sufficient storage and memory. The agent uses only Gemma's text model, without downloading its multimodal projector or MTP assistant. Each stage loads and releases its model on the same worker thread, keeping only one model resident to reduce peak RAM usage; model loading adds latency to each turn.
+
+After Gemma finishes generating the response, speech is split at Japanese/English punctuation and line breaks, preserving closing quotes and decimal numbers. GPT-SoVITS synthesizes the phrases in order with a single model initialization per response. A separate playback thread starts the first clip immediately while synthesis continues, with at most two completed clips waiting in the PCM queue. If synthesis is slower than playback, there can be a pause between phrases. Interrupting discards pending clips and stops current playback; an in-progress native synthesis call finishes before the next recognition runs. The response text remains the full answer, and waveform animation follows the clip actually playing.
+
+During a call the settings, menu and chat history are hidden. An abstract, soft white orb appears against a black background. The same PCM-driven animation follows microphone input and the actual playback position, expanding and wobbling with audio amplitude. Gentle pulsing and movement continue at rest; model loading and synthesis have a subtle waiting motion until playback audio becomes available. Only the latest recognized utterance and assistant response are shown. The sample uses Japanese recognition and a bundled Japanese reference voice. It detects the end of a turn after about one second of silence (maximum 30 seconds per recording), keeps a short conversation context internally, pauses the microphone during processing/playback, and automatically listens again after playback. Silence alone is never sent to Whisper. Use **×** or Android Back to end the session. Leaving the foreground also stops capture and playback; model destruction is queued after inference on the same model thread.
+
+The center button submits microphone audio without waiting for the silence endpoint, including short/quiet recordings. During recognition, LLM generation, synthesis or playback it becomes a cancel button. Cancelling stops and flushes playback, discards the cancelled turn and any later results, and immediately resumes microphone capture. The blocking native synthesis API has no abort method: its current call finishes on the model worker before the next recognition can execute, while the microphone can already capture the next query. Models are still created and released on their owning worker. **×** at the bottom right ends the entire session.
 
 ## Running the LLM samples on the NPU (QNN)
 
