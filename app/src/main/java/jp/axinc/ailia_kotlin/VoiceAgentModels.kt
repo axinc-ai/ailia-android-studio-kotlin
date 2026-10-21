@@ -97,11 +97,11 @@ internal class VoiceAgentModels(private val context: Context) {
         }
     }
 
-    fun startListening(checkActive: () -> Unit) {
+    fun startListening(checkActive: () -> Unit, onIntermediateInput: ((String) -> Unit)? = null) {
         checkActive()
         check(speech.initializeSpeech(config.speechEnvId, liveMode = false)) { "Whisperの初期化に失敗しました" }
         checkActive()
-        speechTurn = speech.createBufferedTurn()
+        speechTurn = speech.createBufferedTurn(onIntermediateInput, checkActive)
     }
 
     fun pushSpeech(audio: FloatArray, channels: Int, sampleRate: Int): Boolean =
@@ -111,6 +111,10 @@ internal class VoiceAgentModels(private val context: Context) {
         val input = try {
             checkActive()
             voiceAgentTranscript(checkNotNull(speechTurn).finish(checkActive))
+        } catch (error: Exception) {
+            // An intermediate callback can abort native decoding after the turn was cancelled.
+            checkActive()
+            throw error
         } finally {
             speechTurn = null
             speech.releaseSpeech()
@@ -149,10 +153,18 @@ internal class VoiceAgentModels(private val context: Context) {
                 val generationLimit = minOf(512, contextSize - model.getPromptTokenCount() - 1)
                 check(generationLimit > 0) { "音声入力が長すぎます。対話を開始し直してください" }
                 var complete = false
+                val preview = VoiceAgentTextStream()
+                var displayed = ""
                 for (step in 0 until generationLimit) {
                     checkActive()
                     complete = model.generate()
                     if (complete) break
+                    val text = preview.append(model.getDeltaText())
+                    if (text != displayed) {
+                        checkActive()
+                        onOutput(text)
+                        displayed = text
+                    }
                 }
                 checkActive()
                 check(complete) { "応答の生成が上限に達しました。対話を開始し直してください" }
@@ -166,6 +178,8 @@ internal class VoiceAgentModels(private val context: Context) {
                     onOutput(text)
                     return text
                 }
+                // A tool round may contain introductory prose; the next round starts a new preview.
+                onOutput("")
                 val photos = mutableListOf<JSONObject>()
                 for (index in 0 until calls.length()) {
                     checkActive()

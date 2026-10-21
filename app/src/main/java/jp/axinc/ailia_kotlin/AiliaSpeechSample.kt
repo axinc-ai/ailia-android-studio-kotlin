@@ -8,6 +8,7 @@ import android.os.Build
 import android.util.Log
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.CancellationException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -309,12 +310,28 @@ class AiliaSpeechSample(private val modelDirectory: File) {
     }
 
     /** Non-LIVE input: Buffered is raised by Silero endpointing or the SDK's 30-second limit. */
-    internal fun createBufferedTurn(): VoiceAgentSpeechTurn {
+    internal fun createBufferedTurn(onIntermediate: ((String) -> Unit)? = null,
+                                   checkActive: () -> Unit = {}): VoiceAgentSpeechTurn {
         val engine = checkNotNull(speech) { "Speech model not initialized" }
         check(!liveModeEnabled) { "Buffered endpoint detection requires non-LIVE mode" }
         // Short Japanese replies should not require the general sample's one-second speech start.
         requireSuccess("setSilentThreshold", engine.setSilentThreshold(0.5f, 0.25f, 1.0f))
         Log.i(TAG, "Speech endpoint: Silero VAD, threshold=0.5, speechSec=0.25, noSpeechSec=1.0, non-LIVE")
+        val confirmed = mutableListOf<String>()
+        if (onIntermediate != null) {
+            val callback = object : IntermediateCallback {
+                override fun onIntermediateResult(text: String): Int = try {
+                    checkActive()
+                    onIntermediate(voiceAgentTranscript(confirmed + text))
+                    0
+                } catch (_: CancellationException) {
+                    // Abort decoding without throwing through the native callback boundary.
+                    1
+                }
+            }
+            requireSuccess("setIntermediateCallback", engine.setIntermediateCallback(callback))
+            speechIntermediateCallback = callback
+        }
         fun flag(operation: String, value: Int): Boolean {
             check(value in 0..1) { "$operation failed ($value): ${engine.getErrorDetail()}" }
             return value == 1
@@ -330,11 +347,16 @@ class AiliaSpeechSample(private val modelDirectory: File) {
             }
             override fun transcribe(): List<String> {
                 transcribeOnce(engine)
-                return collectTextLines(engine)
+                val lines = collectTextLines(engine)
+                confirmed += lines
+                checkActive()
+                onIntermediate?.invoke(voiceAgentTranscript(confirmed))
+                return lines
             }
             override fun complete() = flag("complete", engine.getComplete())
             override fun resetTranscribeState() {
                 requireSuccess("resetTranscribeState", engine.resetTranscribeState())
+                confirmed.clear()
                 Log.i(TAG, "Speech endpoint: resetTranscribeState")
             }
         })

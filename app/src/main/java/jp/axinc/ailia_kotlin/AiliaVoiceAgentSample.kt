@@ -51,6 +51,9 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
         fun onState(state: State)
         fun onInput(text: String)
         fun onOutput(text: String)
+        /** Provisional text; only onInput/onOutput carry the completed turn. */
+        fun onIntermediateInput(text: String) = Unit
+        fun onOutputPreview(text: String) = Unit
         fun onWaveform(samples: FloatArray)
         fun onDownload(fileName: String, downloaded: Long, total: Long)
         fun onStopped(error: String?)
@@ -120,7 +123,7 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
         micInput = turn
         // Capture can start while a cancelled native call is still finishing. All SDK input
         // queues behind initialization on the owning worker, including manual submission.
-        enqueue(token) { models.startListening { ensureActive(token) } }
+        enqueue(token) { startListening(token) }
         val file = File(context.cacheDir, "voice_agent_$token.wav")
         capture.startRecording(file, object : WavRecorder.RecordingListener {
             override fun onWaveform(chunk: FloatArray, sampleRate: Int) {
@@ -183,12 +186,14 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
     fun interruptResponse(resumeMicrophone: Boolean = true): Boolean {
         check(Looper.myLooper() == Looper.getMainLooper())
         if (!isActive || currentState !in INTERRUPTIBLE_STATES) return false
+        val discardInputPreview = currentState == State.RECOGNIZING
         val token = generation.incrementAndGet()
         inputMode = InputMode.MICROPHONE
         micInput?.recorder?.cancelRecording()
         micInput = null
         player.silence()
         notifyState(State.CANCELLING)
+        if (discardInputPreview) listener?.onIntermediateInput("")
         listener?.onOutput("")
         // This runs after the cancelled turn's finally blocks and before any new inference.
         executor.execute { models.release(clearHistory = false) }
@@ -234,7 +239,7 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
         val gate = VoiceAgentInputGate(guard)
         val chunkSize = valuesPerSecond / 10
         state(token, State.WAITING_QUERY)
-        models.startListening { ensureActive(token) }
+        startListening(token)
         fun feed(chunk: FloatArray): Boolean {
             ensureActive(token)
             val input = gate.accept(chunk)
@@ -272,6 +277,7 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
 
     private fun respondToAudio(token: Long) {
         state(token, State.RECOGNIZING)
+        emit(token) { listener?.onIntermediateInput(""); listener?.onOutputPreview("") }
         val input = models.finishRecognition { ensureActive(token) }
         if (input.isBlank()) {
             check(inputMode != InputMode.SYNTHESIZED_QUERIES) { "テスト音声を認識できませんでした" }
@@ -289,11 +295,17 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
                     else file.delete()
                 }
             }) { text ->
-            emit(token) { listener?.onOutput(text) }
+            emit(token) { listener?.onOutputPreview(text) }
         }
         ensureActive(token)
         emit(token) { listener?.onOutput(response) }
         if (speechOutputEnabled) speakResponse(token, response)
+    }
+
+    private fun startListening(token: Long) {
+        models.startListening({ ensureActive(token) }) { text ->
+            emit(token) { listener?.onIntermediateInput(text) }
+        }
     }
 
     /** Wait off the UI thread; cancellation never waits for permission or a camera callback. */

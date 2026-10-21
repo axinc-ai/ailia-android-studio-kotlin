@@ -297,6 +297,8 @@ class VoiceAgentController(
             override fun onOutput(text: String) {
                 if (!disposed) { output.text = text; output.contentDescription = "音声出力: $text" }
             }
+            override fun onIntermediateInput(text: String) = onInput(text)
+            override fun onOutputPreview(text: String) = onOutput(text)
             override fun onWaveform(samples: FloatArray) {
                 if (!disposed) {
                     orb.setAudio(samples)
