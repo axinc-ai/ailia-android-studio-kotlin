@@ -10,20 +10,54 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Available LLM models (URLs follow ailia-models-flutter: /gemma/<fileName>).
  *
  * @property mmprojFileName CPU(GGUF)で画像/音声を入力するためのmmproj。対応しないモデルはnull。
+ * @property mtpFileName CPU(GGUF)でMTPに使うAssistant(ドラフトモデル)。対応しないモデルはnull。
  */
 enum class LLMModelType(
     val displayName: String,
     val fileName: String,
     val mmprojFileName: String? = null,
+    val mtpFileName: String? = null,
 ) {
-    GEMMA_4_E2B("Gemma 4 E2B", "gemma-4-E2B-it-Q4_K_M.gguf", "gemma-4-E2B-it-mmproj-F16.gguf"),
-    GEMMA_4_E4B("Gemma 4 E4B", "gemma-4-E4B-it-Q4_K_M.gguf", "gemma-4-E4B-it-mmproj-F16.gguf"),
+    GEMMA_4_E2B(
+        "Gemma 4 E2B", "gemma-4-E2B-it-Q4_K_M.gguf", "gemma-4-E2B-it-mmproj-F16.gguf",
+        "mtp-gemma-4-E2B-it-Q4_0.gguf",
+    ),
+    GEMMA_4_E4B(
+        "Gemma 4 E4B", "gemma-4-E4B-it-Q4_K_M.gguf", "gemma-4-E4B-it-mmproj-F16.gguf",
+        "mtp-gemma-4-E4B-it-Q4_0.gguf",
+    ),
     GEMMA_2_2B("Gemma 2 2B", "gemma-2-2b-it-Q4_K_M.gguf"),
     ;
 
     companion object {
         /** VLM / ALM / ToolUseで選べるモデル(画像・音声入力とツール呼び出しに対応するGemma 4)。 */
         val GEMMA_4_MODELS = listOf(GEMMA_4_E2B, GEMMA_4_E4B)
+    }
+}
+
+/**
+* MTP(Multi-Token Prediction)のAssistant(ドラフトモデル)の有効化。
+ *
+ * Assistantが次の数トークンを予想し、本体がまとめて検証することでDecodeを高速化する。
+ * 本体を開いた後、最初のプロンプト設定より前に1回だけ[open]を呼び出す。
+ */
+object LLMMtp {
+    private const val TAG = "LLMMtp"
+
+    /** Assistantが1回に生成する候補トークン数。 */
+    const val N_DRAFT = 3
+
+    /**
+     * Assistantを開いてMTPを有効にする。
+     * 失敗してもMTPが有効にならないだけで通常の生成は続けられるため、例外は投げずにfalseを返す。
+     */
+    fun open(llm: AiliaLLM, path: String): Boolean = try {
+        llm.openMtpModel(path, N_DRAFT)
+        Log.i(TAG, "MTP enabled: $path (n_draft=$N_DRAFT)")
+        true
+    } catch (e: Exception) {
+        Log.w(TAG, "Failed to enable MTP, falling back to normal decoding: ${e.message}", e)
+        false
     }
 }
 
@@ -71,6 +105,23 @@ class AiliaLLMSample {
 
     var modelType: LLMModelType = LLMModelType.GEMMA_4_E2B
 
+    /** MTPを使うか。Assistantのないモデル(Gemma 2など)では無視する。 */
+    var mtpEnabled: Boolean = true
+
+    /** 初期化時にMTPを有効にできたか。 */
+    var isMtpActive: Boolean = false
+        private set
+
+    /** ダウンロード中のファイル名。進捗表示に使う。 */
+    @Volatile
+    var downloadingFileName: String? = null
+        private set
+
+    /** 直前の[initialize]でモデルのダウンロードに失敗した理由。失敗していなければnull。 */
+    @Volatile
+    var downloadError: String? = null
+        private set
+
     companion object {
         private const val TAG = "AiliaLLMSample"
         private const val N_CTX = 8192 // Context window size
@@ -95,24 +146,42 @@ class AiliaLLMSample {
         context: Context,
         progressListener: ModelDownloader.DownloadListener? = null
     ): Boolean {
+        downloadError = null
+        val listener = ModelDownloader.recordingErrors(progressListener) { downloadError = it }
         return try {
             if (isInitialized) {
                 release()
             }
 
             Log.i(TAG, "Downloading ${modelType.displayName} model (${modelType.fileName})...")
-            val modelFile = ModelDownloader.downloadLLMModel(context, modelType.fileName, progressListener)
+            downloadingFileName = modelType.fileName
+            val modelFile = ModelDownloader.downloadLLMModel(context, modelType.fileName, listener)
             if (modelFile == null) {
                 Log.e(TAG, "Failed to download model")
+                downloadError = downloadError ?: "Failed to download ${modelType.fileName}"
                 return false
             }
             modelPath = modelFile.absolutePath
+
+            val mtpFileName = mtpFileNameOrNull()
+            val mtpFile = mtpFileName?.let {
+                Log.i(TAG, "Downloading MTP assistant ($it)...")
+                downloadingFileName = it
+                ModelDownloader.downloadLLMModel(context, it, listener)
+            }
+            if (mtpFileName != null && mtpFile == null) {
+                Log.e(TAG, "Failed to download MTP assistant")
+                downloadError = downloadError ?: "Failed to download $mtpFileName"
+                return false
+            }
 
             Log.i(TAG, "Creating AiliaLLM instance...")
             llm = AiliaLLM()
 
             Log.i(TAG, "Opening model file: $modelPath")
             llm!!.openModelFile(modelPath!!, N_CTX)
+            // Assistantは本体を開いた後、最初のプロンプト設定より前に開く
+            isMtpActive = mtpFile != null && LLMMtp.open(llm!!, mtpFile.absolutePath)
 
             // Set default sampling parameters
             llm!!.setSamplingParams(40, 0.9f, 0.4f, 1234)
@@ -136,7 +205,9 @@ class AiliaLLMSample {
      * Checks if the model is already downloaded.
      */
     fun isModelDownloaded(context: Context): Boolean {
-        return ModelDownloader.isLLMModelDownloaded(context, modelType.fileName)
+        val modelDownloaded = ModelDownloader.isLLMModelDownloaded(context, modelType.fileName)
+        val mtpDownloaded = mtpFileNameOrNull()?.let { ModelDownloader.isLLMModelDownloaded(context, it) } ?: true
+        return modelDownloaded && mtpDownloaded
     }
 
     /**
@@ -153,6 +224,10 @@ class AiliaLLMSample {
 
     /** 現在のモデルでダウンロードするモデルファイル名。 */
     fun modelFileName(): String = modelType.fileName
+
+    /** MTPを使う場合のAssistantのファイル名。MTP無効時や対応しないモデルではnull。 */
+    private fun mtpFileNameOrNull(): String? =
+        if (mtpEnabled) modelType.mtpFileName else null
 
     /**
      * Generates a response for the given user input.
@@ -207,7 +282,14 @@ class AiliaLLMSample {
             val decodeNanos = if (decodeStartNanos > 0) System.nanoTime() - decodeStartNanos else 0L
 
             if (cancelRequested.get()) {
-                while (conversationHistory.size > historySizeBeforeRequest) conversationHistory.removeAt(conversationHistory.lastIndex)
+                // 中断した回も画面に残るため、途中までの応答を履歴に積んで次の発言の文脈にする。
+                // 何も生成していなければ送信前の状態に戻す
+                val partialResponse = responseBuilder.toString()
+                if (partialResponse.isEmpty()) {
+                    while (conversationHistory.size > historySizeBeforeRequest) conversationHistory.removeAt(conversationHistory.lastIndex)
+                } else {
+                    conversationHistory.add(AiliaLLMChatMessage("assistant", partialResponse))
+                }
                 listener?.onError("Generation cancelled")
                 return -1
             }
@@ -306,6 +388,7 @@ class AiliaLLMSample {
         } finally {
             llm = null
             isInitialized = false
+            isMtpActive = false
             modelPath = null
             conversationHistory.clear()
             Log.i(TAG, "LLM released")

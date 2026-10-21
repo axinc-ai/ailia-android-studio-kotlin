@@ -30,6 +30,23 @@ class AiliaToolUseSample {
     /** 使用するモデル。ツール呼び出しに対応するGemma 4のみ。 */
     var modelType: LLMModelType = LLMModelType.GEMMA_4_E2B
 
+    /** MTPを使うか。 */
+    var mtpEnabled: Boolean = true
+
+    /** 初期化時にMTPを有効にできたか。 */
+    var isMtpActive: Boolean = false
+        private set
+
+    /** ダウンロード中のファイル名。進捗表示に使う。 */
+    @Volatile
+    var downloadingFileName: String? = null
+        private set
+
+    /** 直前の[initialize]でモデルのダウンロードに失敗した理由。失敗していなければnull。 */
+    @Volatile
+    var downloadError: String? = null
+        private set
+
     /** ツールで設定したエアコンの温度(摂氏)。未設定ならnull。 */
     var airConditionerTemperature: Double? = null
         private set
@@ -94,24 +111,42 @@ class AiliaToolUseSample {
         context: Context,
         progressListener: ModelDownloader.DownloadListener? = null,
     ): Boolean {
+        downloadError = null
+        val listener = ModelDownloader.recordingErrors(progressListener) { downloadError = it }
         return try {
             if (isInitialized) {
                 release()
             }
 
             Log.i(TAG, "Downloading ${modelType.displayName} model (${modelType.fileName})...")
-            val modelFile = ModelDownloader.downloadLLMModel(context, modelType.fileName, progressListener)
+            downloadingFileName = modelType.fileName
+            val modelFile = ModelDownloader.downloadLLMModel(context, modelType.fileName, listener)
             if (modelFile == null) {
                 Log.e(TAG, "Failed to download model")
+                downloadError = downloadError ?: "Failed to download ${modelType.fileName}"
                 return false
             }
             modelPath = modelFile.absolutePath
+
+            val mtpFileName = mtpFileNameOrNull()
+            val mtpFile = mtpFileName?.let {
+                Log.i(TAG, "Downloading MTP assistant ($it)...")
+                downloadingFileName = it
+                ModelDownloader.downloadLLMModel(context, it, listener)
+            }
+            if (mtpFileName != null && mtpFile == null) {
+                Log.e(TAG, "Failed to download MTP assistant")
+                downloadError = downloadError ?: "Failed to download $mtpFileName"
+                return false
+            }
 
             Log.i(TAG, "Creating AiliaLLM instance...")
             llm = AiliaLLM()
 
             Log.i(TAG, "Opening model file: $modelPath")
             llm!!.openModelFile(modelPath!!, N_CTX)
+            // Assistantは本体を開いた後、最初のプロンプト設定より前に開く
+            isMtpActive = mtpFile != null && LLMMtp.open(llm!!, mtpFile.absolutePath)
             // ツール呼び出しの引数がぶれないよう、Tool Useではtemperatureを0にする
             llm!!.setSamplingParams(40, 0.9f, TEMPERATURE, 1234)
 
@@ -131,11 +166,18 @@ class AiliaToolUseSample {
     }
 
     /** Checks if the model is already downloaded. */
-    fun isModelDownloaded(context: Context): Boolean =
-        ModelDownloader.isLLMModelDownloaded(context, modelType.fileName)
+    fun isModelDownloaded(context: Context): Boolean {
+        val modelDownloaded = ModelDownloader.isLLMModelDownloaded(context, modelType.fileName)
+        val mtpDownloaded = mtpFileNameOrNull()?.let { ModelDownloader.isLLMModelDownloaded(context, it) } ?: true
+        return modelDownloaded && mtpDownloaded
+    }
 
     /** ダウンロードするモデルファイル名。 */
     fun modelFileName(): String = modelType.fileName
+
+    /** MTPを使う場合のAssistantのファイル名。MTP無効時や対応しないモデルではnull。 */
+    private fun mtpFileNameOrNull(): String? =
+        if (mtpEnabled) modelType.mtpFileName else null
 
     /**
      * Runs one user request, executing tool calls until the model answers.
@@ -172,16 +214,27 @@ class AiliaToolUseSample {
 
                 var done = false
                 var generationSteps = 0
+                val partialResponse = StringBuilder()
                 while (!done && !cancelRequested.get() && generationSteps < MAX_GENERATION_STEPS) {
                     done = model.generate()
                     generationSteps++
                     val token = model.getDeltaText()
                     if (token.isNotEmpty()) {
+                        partialResponse.append(token)
                         listener?.onToken(token)
                     }
                 }
                 if (cancelRequested.get()) {
-                    rollbackHistory(historySizeBeforeRequest)
+                    // 中断した回も画面に残るため、途中までの応答を履歴に積んで次の発言の文脈にする。
+                    // 実行済みのツール呼び出しと結果も残す(エアコンの状態は既に変わっている)。
+                    // このリクエストで何も生成していなければ送信前の状態に戻す
+                    if (partialResponse.isNotEmpty()) {
+                        conversationHistory.put(
+                            JSONObject().put("role", "assistant").put("content", partialResponse.toString())
+                        )
+                    } else if (turn == 0) {
+                        rollbackHistory(historySizeBeforeRequest)
+                    }
                     listener?.onError("Generation cancelled")
                     return -1
                 }
@@ -307,6 +360,7 @@ class AiliaToolUseSample {
         } finally {
             llm = null
             isInitialized = false
+            isMtpActive = false
             modelPath = null
             conversationHistory = JSONArray()
             Log.i(TAG, "Tool Use released")

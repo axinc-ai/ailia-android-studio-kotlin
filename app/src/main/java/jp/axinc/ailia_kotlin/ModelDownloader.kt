@@ -1,9 +1,9 @@
 package jp.axinc.ailia_kotlin
 
 import android.content.Context
+import android.util.Base64
 import android.util.Log
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -14,16 +14,14 @@ import java.util.Properties
 /**
  * A model file and the information required to validate it.
  *
- * [expectedSize] and [sha256] are optional because not all hosted models expose
- * immutable release metadata. Files downloaded by this class still receive a
- * sidecar containing the server length and computed SHA-256, so subsequent
- * launches can detect local corruption without accessing the network.
+ * Downloads are checked against the MD5 that Google Cloud Storage returns and
+ * [expectedSize]. A file that is already in place is used as is, without network
+ * access or rehashing, so models keep working offline.
  */
 data class ModelFileSpec(
     val url: String,
     val fileName: String,
     val expectedSize: Long? = null,
-    val sha256: String? = null,
 )
 
 /** Robust, shared downloader used by every sample in this application. */
@@ -63,6 +61,23 @@ object ModelDownloader {
         )
     }
 
+    /** listenerへ中継しつつ、ダウンロード失敗の理由を[onError]でも受け取れるようにする。 */
+    fun recordingErrors(listener: DownloadListener?, onError: (String) -> Unit): DownloadListener =
+        object : DownloadListener {
+            override fun onProgress(bytesDownloaded: Long, totalBytes: Long) {
+                listener?.onProgress(bytesDownloaded, totalBytes)
+            }
+
+            override fun onComplete(file: File) {
+                listener?.onComplete(file)
+            }
+
+            override fun onError(error: String) {
+                onError.invoke(error)
+                listener?.onError(error)
+            }
+        }
+
     fun downloadFile(
         directory: File,
         spec: ModelFileSpec,
@@ -78,64 +93,45 @@ object ModelDownloader {
                 "Failed to create model subdirectory: ${parent.absolutePath}"
             }
 
-            if (isValid(file, spec)) {
+            if (isPresent(file)) {
                 Log.i(TAG, "Using validated model: ${file.absolutePath}")
                 listener?.onComplete(file)
                 return file
             }
-            deleteInvalidArtifacts(file, keepTempFile = true)
+            deleteInvalidArtifacts(file)
 
-            // 中断された一時ファイルが残っていればRangeリクエストで続きから再開する
+            // 途中のファイルから再開すると、その間にサーバー側のファイルが差し替わった場合や
+            // 配信キャッシュに古い内容が残っている場合に新旧が混ざるため、常に最初から取り直す
             val tempFile = File(directory, "${spec.fileName}.download")
-            var resumeOffset = if (tempFile.isFile) tempFile.length() else 0L
-            if (spec.expectedSize != null && resumeOffset > spec.expectedSize) {
-                check(tempFile.delete()) { "Failed to remove oversized temporary file: ${tempFile.absolutePath}" }
-                resumeOffset = 0L
-            }
-
             val connection = (URL(spec.url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 30_000
                 readTimeout = 120_000
                 requestMethod = "GET"
                 instanceFollowRedirects = true
-                if (resumeOffset > 0) {
-                    setRequestProperty("Range", "bytes=$resumeOffset-")
-                }
                 connect()
             }
             try {
-                val resumed = resumeOffset > 0 &&
-                    connection.responseCode == HttpURLConnection.HTTP_PARTIAL
-                if (connection.responseCode != HttpURLConnection.HTTP_OK && !resumed) {
-                    // 再開リクエストが拒否された場合(416など)は一時ファイルを破棄して次回最初から取り直す
-                    if (resumeOffset > 0 && tempFile.exists() && !tempFile.delete()) {
-                        Log.w(TAG, "Failed to delete ${tempFile.absolutePath}")
-                    }
+                if (connection.responseCode != HttpURLConnection.HTTP_OK) {
                     error("HTTP ${connection.responseCode} for ${spec.url}")
-                }
-                if (!resumed) {
-                    // サーバーがRangeに対応しない場合などは最初からダウンロードし直す
-                    if (tempFile.exists() && !tempFile.delete()) {
-                        error("Failed to remove stale temporary file: ${tempFile.absolutePath}")
-                    }
-                    resumeOffset = 0L
-                } else {
-                    Log.i(TAG, "Resuming download of ${spec.fileName} from $resumeOffset bytes")
                 }
                 val responseSize = connection.getHeaderField("Content-Length")?.toLongOrNull()
                     ?.takeIf { it >= 0 }
-                val requiredSize = spec.expectedSize ?: responseSize?.plus(resumeOffset)
+                val requiredSize = spec.expectedSize ?: responseSize
+                // Google Cloud Storageはファイル全体のMD5を x-goog-hash で返す
+                val expectedMd5 = googMd5(connection.headerFields)
 
-                var downloaded = resumeOffset
+                val md5 = MessageDigest.getInstance("MD5")
+                var downloaded = 0L
                 var lastReported = -1L
                 connection.inputStream.use { input ->
-                    FileOutputStream(tempFile, resumed).use { output ->
+                    FileOutputStream(tempFile).use { output ->
                         val buffer = ByteArray(BUFFER_SIZE)
                         while (true) {
                             val count = input.read(buffer)
                             if (count < 0) break
                             if (count == 0) continue
                             output.write(buffer, 0, count)
+                            md5.update(buffer, 0, count)
                             downloaded += count
                             if (downloaded - lastReported >= PROGRESS_STEP_BYTES) {
                                 listener?.onProgress(downloaded, requiredSize ?: -1L)
@@ -151,25 +147,42 @@ object ModelDownloader {
                 check(requiredSize == null || downloaded == requiredSize) {
                     "Size mismatch for ${spec.fileName}: expected=$requiredSize actual=$downloaded"
                 }
-                val actualSha256 = sha256(tempFile)
-                check(spec.sha256 == null || actualSha256.equals(spec.sha256, ignoreCase = true)) {
-                    "SHA-256 mismatch for ${spec.fileName}"
+                val actualMd5 = md5.digest().toHex()
+                check(expectedMd5 == null || actualMd5.equals(expectedMd5, ignoreCase = true)) {
+                    "MD5 mismatch for ${spec.fileName}: expected=$expectedMd5 actual=$actualMd5"
                 }
+                if (expectedMd5 == null) Log.w(TAG, "No MD5 from server, skipped MD5 check: ${spec.fileName}")
 
                 moveChecked(tempFile, file)
-                writeMetadata(file, spec.url, downloaded, actualSha256)
-                check(isValid(file, spec)) { "Downloaded model validation failed: ${spec.fileName}" }
+                writeMetadata(file, spec.url, downloaded, actualMd5)
+                check(isPresent(file)) { "Downloaded model validation failed: ${spec.fileName}" }
                 listener?.onComplete(file)
                 file
             } finally {
                 connection.disconnect()
             }
         } catch (e: Exception) {
-            // 通信断などによる失敗時は一時ファイルを残し、次回のダウンロードで再開する
-            deleteInvalidArtifacts(file, keepTempFile = true)
+            // 次回は最初から取り直すため、一時ファイルも残さない
+            deleteInvalidArtifacts(file)
             val error = "Download failed for ${spec.fileName}: ${e.message}"
             Log.e(TAG, error, e)
             listener?.onError(error)
+            null
+        }
+    }
+
+    /** x-goog-hash ヘッダ("crc32c=...,md5=..."、複数行の場合あり)からMD5を16進文字列で取り出す。 */
+    private fun googMd5(headers: Map<String?, List<String>>): String? {
+        val values = headers.entries
+            .filter { it.key.equals("x-goog-hash", ignoreCase = true) }
+            .flatMap { it.value }
+            .flatMap { it.split(",") }
+        val encoded = values.map(String::trim).firstOrNull { it.startsWith("md5=") }?.removePrefix("md5=")
+            ?: return null
+        return try {
+            Base64.decode(encoded, Base64.NO_WRAP).toHex()
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "Invalid MD5 in x-goog-hash: $encoded")
             null
         }
     }
@@ -190,7 +203,7 @@ object ModelDownloader {
         }
     })
 
-    fun isDownloaded(directory: File, spec: ModelFileSpec): Boolean = isValid(File(directory, spec.fileName), spec)
+    fun isDownloaded(directory: File, spec: ModelFileSpec): Boolean = isPresent(File(directory, spec.fileName))
 
     fun isLLMModelDownloaded(context: Context, fileName: String): Boolean = isDownloaded(
         modelDirectory(context),
@@ -218,32 +231,17 @@ object ModelDownloader {
     fun getSampleImagePath(context: Context): String =
         File(modelDirectory(context), "sample_image.jpg").absolutePath
 
-    private fun isValid(file: File, spec: ModelFileSpec): Boolean {
-        if (!file.isFile || !file.canRead() || file.length() <= 0) return false
-        if (spec.expectedSize != null && file.length() != spec.expectedSize) return false
+    // ダウンロード中は ".download" に書き、ダウンロード直後にMD5とサイズを照合したものだけを
+    // 本来の名前にするため、本来の名前のファイルがあれば完全なものとして扱う。
+    // オフラインでも使えるよう、既存ファイルの検証(ハッシュ計算や取得元の照合)はしない
+    private fun isPresent(file: File): Boolean = file.isFile && file.canRead() && file.length() > 0
 
-        val metadataFile = metadataFile(file)
-        if (!metadataFile.isFile) {
-            // Preserve valid models downloaded by older application versions. New downloads
-            // always have metadata and receive full hash validation below.
-            return spec.sha256 == null || sha256(file).equals(spec.sha256, ignoreCase = true)
-        }
-        val metadata = Properties().apply {
-            FileInputStream(metadataFile).use(::load)
-        }
-        val recordedLength = metadata.getProperty("length")?.toLongOrNull() ?: return false
-        val recordedSha256 = metadata.getProperty("sha256") ?: return false
-        if (metadata.getProperty("url") != spec.url || recordedLength != file.length()) return false
-        if (spec.sha256 != null && !recordedSha256.equals(spec.sha256, ignoreCase = true)) return false
-        return sha256(file).equals(recordedSha256, ignoreCase = true)
-    }
-
-    private fun writeMetadata(file: File, url: String, length: Long, sha256: String) {
+    private fun writeMetadata(file: File, url: String, length: Long, md5: String) {
         val temp = File(file.parentFile, "${file.name}.metadata.download")
         val properties = Properties().apply {
             setProperty("url", url)
             setProperty("length", length.toString())
-            setProperty("sha256", sha256)
+            setProperty("md5", md5)
         }
         FileOutputStream(temp).use { output ->
             properties.store(output, "ailia model download metadata")
@@ -261,16 +259,13 @@ object ModelDownloader {
         }
     }
 
-    private fun deleteInvalidArtifacts(file: File, keepTempFile: Boolean = false) {
-        val artifacts = mutableListOf(
+    private fun deleteInvalidArtifacts(file: File) {
+        listOf(
             file,
             metadataFile(file),
             File(file.parentFile, "${file.name}.metadata.download"),
+            File(file.parentFile, "${file.name}.download"),
         )
-        if (!keepTempFile) {
-            artifacts.add(File(file.parentFile, "${file.name}.download"))
-        }
-        artifacts
             .filter(File::exists)
             .forEach { artifact ->
                 if (!artifact.delete()) Log.w(TAG, "Failed to delete ${artifact.absolutePath}")
@@ -292,19 +287,6 @@ object ModelDownloader {
         } catch (e: Exception) {
             Log.w(TAG, "Could not migrate legacy cache model $fileName", e)
         }
-    }
-
-    private fun sha256(file: File): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        FileInputStream(file).use { input ->
-            val buffer = ByteArray(BUFFER_SIZE)
-            while (true) {
-                val count = input.read(buffer)
-                if (count < 0) break
-                if (count > 0) digest.update(buffer, 0, count)
-            }
-        }
-        return digest.digest().toHex()
     }
 
     private fun ByteArray.toHex(): String = joinToString("") {
