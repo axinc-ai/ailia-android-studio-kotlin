@@ -33,6 +33,15 @@ object ModelDownloader {
     /** 進捗通知の間隔。数GBのモデルで通知がログ/UIを圧迫しないように間引く。 */
     private const val PROGRESS_STEP_BYTES = 4L * 1024 * 1024
 
+    /** 変換済みQNNモデル(.qnn)の配置先。ailia LLMのバージョンごとにディレクトリが分かれる。 */
+    private const val QNN_LLM_PATH = "gemma/qnn/v1.5.0"
+
+    /** ailia LLM 1.5.1向けのQNNモデル(-mtp.qnn / -mtp-assistant.qnn / -mmproj.qnn)の配置先。 */
+    private const val QNN_LLM_MTP_PATH = "gemma/qnn/v1.5.1"
+
+    /** ailia LLM 1.5.1向けのQNNモデルのファイル名(精度を含む)。 */
+    private val QNN_LLM_V151_NAME = Regex("-(fp16|int16)-")
+
     const val GEMMA_2_MODEL_URL = "$BASE_URL/gemma/gemma-2-2b-it-Q4_K_M.gguf"
     const val SAMPLE_IMAGE_URL = "$BASE_URL/misc/sample_image.jpg"
 
@@ -59,6 +68,22 @@ object ModelDownloader {
             ModelFileSpec("$BASE_URL/gemma/$fileName", fileName),
             listener,
         )
+    }
+
+    /** SoC固有のQNNモデル(.qnn)をダウンロードする。 */
+    fun downloadQnnLLMModel(
+        context: Context,
+        fileName: String,
+        listener: DownloadListener? = null,
+    ): File? = downloadFile(modelDirectory(context), qnnLLMModelSpec(fileName), listener)
+
+    fun isQnnLLMModelDownloaded(context: Context, fileName: String): Boolean =
+        isDownloaded(modelDirectory(context), qnnLLMModelSpec(fileName))
+
+    private fun qnnLLMModelSpec(fileName: String): ModelFileSpec {
+        // 1.5.1向けのファイルは "<prefix>-<soc>-<precision>-..." と精度を含む。1.5.0向けは精度を含まない
+        val path = if (QNN_LLM_V151_NAME.containsMatchIn(fileName)) QNN_LLM_MTP_PATH else QNN_LLM_PATH
+        return ModelFileSpec("$BASE_URL/$path/$fileName", fileName)
     }
 
     /** listenerへ中継しつつ、ダウンロード失敗の理由を[onError]でも受け取れるようにする。 */
@@ -248,6 +273,44 @@ object ModelDownloader {
             output.fd.sync()
         }
         moveChecked(temp, metadataFile(file))
+    }
+
+    /** 設定画面から削除できる変換済みQNNモデル(.qnn)の種類。 */
+    enum class QnnModelCategory {
+        /** ailia Speech (Speech2Text)の "whisper-*.qnn"。 */
+        SPEECH,
+
+        /** ailia LLM (LLM/VLM/ALM/Tool Use)の "gemma4-*.qnn"。 */
+        LLM,
+    }
+
+    /**
+     * ダウンロード済み(途中の ".qnn.download" を含む)のQNNモデルを列挙する。
+     * ailia Speechのモデルは "whisper" で始まり、それ以外はailia LLMのモデルとして扱う。
+     */
+    fun listQnnModelFiles(context: Context, category: QnnModelCategory): List<File> =
+        modelDirectory(context).listFiles().orEmpty()
+            .filter { it.isFile && (it.name.endsWith(".qnn") || it.name.endsWith(".qnn.download")) }
+            .filter { (it.name.startsWith("whisper")) == (category == QnnModelCategory.SPEECH) }
+            .sortedBy { it.name }
+
+    /** QNNモデルと、そのメタデータ・ダウンロード途中の一時ファイルを削除する。削除できなかったファイルを返す。 */
+    fun deleteQnnModelFiles(context: Context, category: QnnModelCategory): List<File> {
+        val failed = mutableListOf<File>()
+        for (file in listQnnModelFiles(context, category)) {
+            val model = if (file.name.endsWith(".download")) File(file.parentFile, file.name.removeSuffix(".download")) else file
+            val artifacts = listOf(
+                model,
+                metadataFile(model),
+                File(model.parentFile, "${model.name}.metadata.download"),
+                File(model.parentFile, "${model.name}.download"),
+            )
+            for (artifact in artifacts) {
+                if (artifact.exists() && !artifact.delete()) failed.add(artifact)
+            }
+            Log.i(TAG, "Deleted QNN model: ${model.absolutePath}")
+        }
+        return failed
     }
 
     private fun moveChecked(source: File, destination: File) {

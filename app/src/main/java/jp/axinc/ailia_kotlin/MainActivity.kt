@@ -14,6 +14,7 @@ import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import androidx.camera.core.*
@@ -64,10 +65,22 @@ class MainActivity : AppCompatActivity() {
     private lateinit var llmOutputLabel: TextView
     private lateinit var llmChatContainer: LinearLayout
     private lateinit var llmStatusTextView: TextView
+    private lateinit var llmEnvSpinner: Spinner
     private lateinit var llmBenchmarkButton: Button
     private lateinit var llmInputBar: LinearLayout
     private lateinit var toolUseThinkingSwitch: SwitchCompat
     private lateinit var llmMtpSwitch: SwitchCompat
+    private lateinit var settingsDebugLabel: TextView
+    private lateinit var settingsQnnFormatLabel: TextView
+    private lateinit var settingsQnnFormatRadioGroup: RadioGroup
+    private lateinit var settingsQnnFormatNoteTextView: TextView
+    private lateinit var settingsDeleteQnnLabel: TextView
+    private lateinit var settingsSpeechQnnLabel: TextView
+    private lateinit var settingsSpeechQnnFilesTextView: TextView
+    private lateinit var settingsSpeechQnnDeleteButton: Button
+    private lateinit var settingsLlmQnnLabel: TextView
+    private lateinit var settingsLlmQnnFilesTextView: TextView
+    private lateinit var settingsLlmQnnDeleteButton: Button
     private lateinit var almInputModeRadioGroup: RadioGroup
     private lateinit var almWavRadioButton: RadioButton
     private lateinit var almMicRadioButton: RadioButton
@@ -182,6 +195,11 @@ class MainActivity : AppCompatActivity() {
     // 音声認識処理用の低優先度Executor。カメラ/マイク読み出しと分離して
     // transcribe中もUI(波形表示等)がカクつかないようにする。
     private lateinit var speechExecutor: ExecutorService
+    /** cameraExecutor / speechExecutor のスレッド。モデルを初期化したスレッドで解放するために使う。 */
+    @Volatile
+    private var cameraThread: Thread? = null
+    @Volatile
+    private var speechThread: Thread? = null
 
     private var selectedVoiceModelType: VoiceModelType = VoiceModelType.GPT_SOVITS_V1
     private var selectedSpeechModelType: SpeechModelType = SpeechModelType.SENSEVOICE_SMALL
@@ -189,6 +207,13 @@ class MainActivity : AppCompatActivity() {
     private var selectedLLMModelType: LLMModelType = LLMModelType.GEMMA_4_E2B
     /** VLM / ALM / ToolUseで使うモデル。Gemma 4のみ選べる。 */
     private var selectedGemma4ModelType: LLMModelType = LLMModelType.GEMMA_4_E2B
+    // 既定はQNN(NPU)。QNNモデルがない端末/モデルではsetupLLMBackendSpinnerでCPUに落ちる
+    private var selectedLLMBackend: LLMBackend = LLMBackend.QNN
+    /**
+     * ユーザーが選んだバックエンド。モデルにQNN版がない場合は一時的にCPUで実行し、
+     * QNN版のあるモデルに戻したときはこの選択に戻す。
+     */
+    private var preferredLLMBackend: LLMBackend = LLMBackend.QNN
     /** 生成中かどうか。生成中はSendボタンをStopボタンとして使う。 */
     private var llmGenerating = false
 
@@ -262,6 +287,7 @@ class MainActivity : AppCompatActivity() {
         TOOL_USE,
         SPEAKER_VERIFICATION,
         VOICE_FILTER,
+        SETTINGS,
     }
 
     companion object {
@@ -303,7 +329,9 @@ class MainActivity : AppCompatActivity() {
 
         // cameraExecutorはsetupModeSelection()より先に初期化する必要がある
         // (SpinnerのonItemSelectedでinitializeAilia()が呼ばれるため)
-        cameraExecutor = Executors.newSingleThreadExecutor()
+        cameraExecutor = Executors.newSingleThreadExecutor { r ->
+            Thread(r).also { cameraThread = it }
+        }
 
         // 音声認識はバックグラウンド優先度の専用スレッドで実行し、
         // 推論中でもUIスレッドがCPUを確保できるようにする
@@ -311,7 +339,7 @@ class MainActivity : AppCompatActivity() {
             Thread {
                 android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
                 r.run()
-            }
+            }.also { speechThread = it }
         }
 
         initializeViews()
@@ -350,12 +378,44 @@ class MainActivity : AppCompatActivity() {
         llmOutputLabel = findViewById(R.id.llmOutputLabel)
         llmChatContainer = findViewById(R.id.llmChatContainer)
         llmStatusTextView = findViewById(R.id.llmStatusTextView)
+        llmEnvSpinner = findViewById(R.id.llmEnvSpinner)
         llmBenchmarkButton = findViewById(R.id.llmBenchmarkButton)
         llmInputBar = findViewById(R.id.llmInputBar)
         toolUseThinkingSwitch = findViewById(R.id.toolUseThinkingSwitch)
         llmMtpSwitch = findViewById(R.id.llmMtpSwitch)
         // MTPのON/OFFを変えたらモデルを開き直す(Assistantは後から外せないため)
         llmMtpSwitch.setOnCheckedChangeListener { _, _ -> releaseLLMSamples() }
+        settingsDebugLabel = findViewById(R.id.settingsDebugLabel)
+        settingsQnnFormatLabel = findViewById(R.id.settingsQnnFormatLabel)
+        settingsQnnFormatRadioGroup = findViewById(R.id.settingsQnnFormatRadioGroup)
+        settingsQnnFormatNoteTextView = findViewById(R.id.settingsQnnFormatNoteTextView)
+        settingsDeleteQnnLabel = findViewById(R.id.settingsDeleteQnnLabel)
+        settingsSpeechQnnLabel = findViewById(R.id.settingsSpeechQnnLabel)
+        settingsSpeechQnnFilesTextView = findViewById(R.id.settingsSpeechQnnFilesTextView)
+        settingsSpeechQnnDeleteButton = findViewById(R.id.settingsSpeechQnnDeleteButton)
+        settingsLlmQnnLabel = findViewById(R.id.settingsLlmQnnLabel)
+        settingsLlmQnnFilesTextView = findViewById(R.id.settingsLlmQnnFilesTextView)
+        settingsLlmQnnDeleteButton = findViewById(R.id.settingsLlmQnnDeleteButton)
+        settingsSpeechQnnDeleteButton.setOnClickListener {
+            confirmDeleteQnnModels(ModelDownloader.QnnModelCategory.SPEECH, "Speech2Text")
+        }
+        settingsLlmQnnDeleteButton.setOnClickListener {
+            confirmDeleteQnnModels(ModelDownloader.QnnModelCategory.LLM, "LLM / VLM / ALM")
+        }
+        settingsQnnFormatRadioGroup.setOnCheckedChangeListener { _, checkedId ->
+            // QNNモデルのフォーマットはメモリ上だけで保持し、再起動でv1.5.1に戻す
+            val format = if (checkedId == R.id.settingsQnnFormatV150RadioButton) {
+                QnnSupport.QnnModelFormat.V1_5_0
+            } else {
+                QnnSupport.QnnModelFormat.V1_5_1
+            }
+            if (format != QnnSupport.modelFormat) {
+                QnnSupport.modelFormat = format
+                Log.i("AILIA_Main", "QNN model format: ${format.displayName}")
+                // 読み込むファイルが変わるため、開いているLLMを解放して次のSend押下時に開き直す
+                releaseLLMModels()
+            }
+        }
         almInputModeRadioGroup = findViewById(R.id.almInputModeRadioGroup)
         almWavRadioButton = findViewById(R.id.almWavRadioButton)
         almMicRadioButton = findViewById(R.id.almMicRadioButton)
@@ -414,6 +474,7 @@ class MainActivity : AppCompatActivity() {
             "ToolUse",
             "SpeakerVerification",
             "VoiceFilter",
+            "Settings",
         )
 
         // 全体メニュー風の見た目にするため専用のitemレイアウト(白太字・中央寄せ)を使う
@@ -582,25 +643,51 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun setupOnnxEnvSpinner(useBlas: Boolean, target: Spinner = envSpinner) {
+    private fun setupOnnxEnvSpinner(
+        useBlas: Boolean,
+        target: Spinner = envSpinner,
+        fallbackToCpu: Boolean = false,
+    ) {
         try {
             if (ailiaEnvironments == null) {
                 Ailia.SetTemporaryCachePath(cacheDir.absolutePath)
-                ailiaEnvironments = AiliaModel.getEnvironments()
+                ailiaEnvironments = AiliaModel.getEnvironments().filter {
+                    isSelectableAiliaEnvironment(it.name)
+                }
             }
-            val envNames = ailiaEnvironments!!.map { "${it.name} (id:${it.id})" }.toTypedArray()
-            val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, envNames)
+            // FP16非対応のSoCではQNNを実行できないため、理由を表示して選択できないようにする
+            val fp16Supported = QnnSupport.isFp16Supported()
+            val disabledPositions = ailiaEnvironments!!.withIndex()
+                .filter { (_, env) -> !fp16Supported && QnnSupport.isQnnEnvironmentName(env.name) }
+                .map { (index, _) -> index }
+                .toSet()
+            val envNames = ailiaEnvironments!!.mapIndexed { index, env ->
+                val label = "${env.name} (id:${env.id})"
+                if (index in disabledPositions) "$label - This SoC QNN FP16 not supported" else label
+            }.toTypedArray()
+            val adapter = SelectableArrayAdapter(
+                this,
+                android.R.layout.simple_spinner_item,
+                envNames,
+                disabledPositions,
+            )
             adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
             target.adapter = adapter
 
             var defaultIndex = 0
             if (useBlas) {
                 // デフォルトはBLAS (CPU-OpenBlas)
-                for ((index, env) in ailiaEnvironments!!.withIndex()) {
-                    if (env.name.contains("OpenBlas", ignoreCase = true)) {
-                        defaultIndex = index
-                        break
-                    }
+                val blasIndex = ailiaEnvironments!!.indexOfFirst {
+                    it.type == AiliaEnvironment.TYPE_BLAS ||
+                        it.name.contains("OpenBlas", ignoreCase = true)
+                }
+                if (blasIndex >= 0) {
+                    defaultIndex = blasIndex
+                } else if (fallbackToCpu) {
+                    // QNN版にはBLASがないため、先頭のQNNではなく通常CPUを選ぶ。
+                    defaultIndex = preferredBlasThenCpuEnvironmentIndex(
+                        ailiaEnvironments!!.map { it.type },
+                    )
                 }
             } else {
                 // デフォルトはGPU
@@ -610,6 +697,10 @@ class MainActivity : AppCompatActivity() {
                         break
                     }
                 }
+            }
+            if (defaultIndex in disabledPositions) {
+                // 既定値が選択できないQNNになる構成では、選択可能な先頭の環境に退避する
+                defaultIndex = envNames.indices.firstOrNull { it !in disabledPositions } ?: 0
             }
             target.setSelection(defaultIndex)
             selectedEnvId = ailiaEnvironments!![defaultIndex].id
@@ -652,7 +743,10 @@ class MainActivity : AppCompatActivity() {
             }
 
             AlgorithmType.SPEAKER_VERIFICATION,
-            AlgorithmType.VOICE_FILTER,
+            AlgorithmType.VOICE_FILTER -> {
+                setupOnnxEnvSpinner(useBlas = true, fallbackToCpu = true)
+            }
+
             AlgorithmType.TOKENIZE -> {
                 setupOnnxEnvSpinner(useBlas = true)
             }
@@ -666,7 +760,11 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.TEXT_TO_SPEECH -> {
                 // TTSのバックエンド選択はGenerateボタンの右側に表示する
                 envSpinner.visibility = View.GONE
-                setupOnnxEnvSpinner(useBlas = true, target = voiceEnvSpinner)
+                setupOnnxEnvSpinner(
+                    useBlas = true,
+                    target = voiceEnvSpinner,
+                    fallbackToCpu = true,
+                )
             }
 
             AlgorithmType.OBJECT_DETECTION, AlgorithmType.CLASSIFICATION, AlgorithmType.TRACKING -> {
@@ -785,6 +883,7 @@ class MainActivity : AppCompatActivity() {
                 selectedRuntime = "ONNX"
                 arrayOf("VoiceFilter + dynamic d-vector embedder + Silero VAD v6")
             }
+            AlgorithmType.SETTINGS -> arrayOf("Settings")
         }
 
         val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, items)
@@ -800,6 +899,117 @@ class MainActivity : AppCompatActivity() {
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
+
+        when (algorithm) {
+            AlgorithmType.LLM -> setupLLMBackendSpinner()
+            // 選んだモデルのQNN対応状況で選択肢を決める
+            AlgorithmType.MULTIMODAL_LLM, AlgorithmType.ALM, AlgorithmType.TOOL_USE ->
+                setupLLMBackendSpinner(selectedGemma4ModelType)
+            else -> {}
+        }
+    }
+
+    /**
+     * LLMの実行バックエンド(CPU/QNN)選択スピナーを更新する。
+     * QNNはailia LLMのAPIで取得したSoC名に対応する変換済みモデルがある場合のみ選択できる。
+     */
+    private fun setupLLMBackendSpinner(modelType: LLMModelType = selectedLLMModelType) {
+        val backends = LLMBackend.values().filter {
+            it != LLMBackend.QNN || QnnSupport.isLLMQnnAvailable(modelType)
+        }
+        // 希望のバックエンドが使えないモデル(QNN版のないE4Bなど)ではCPUを自動で選ぶ
+        selectedLLMBackend = if (preferredLLMBackend in backends) preferredLLMBackend else backends.first()
+        val items = backends.map { backend ->
+            when (backend) {
+                // 使用するモデルファイルが分かるようにSoC名を併記する
+                LLMBackend.QNN -> {
+                    // 既定(v1.5.1)以外のフォーマットを選んでいる場合は分かるように併記する
+                    val format = QnnSupport.modelFormat
+                    val suffix = if (format != QnnSupport.QnnModelFormat.V1_5_1) " (${format.displayName})" else ""
+                    "${backend.displayName} ${QnnSupport.socName}$suffix"
+                }
+                else -> backend.displayName
+            }
+        }.toTypedArray()
+
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, items)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        llmEnvSpinner.onItemSelectedListener = null
+        llmEnvSpinner.adapter = adapter
+        llmEnvSpinner.setSelection(backends.indexOf(selectedLLMBackend).coerceAtLeast(0), false)
+        llmEnvSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val newBackend = backends[position]
+                if (newBackend != selectedLLMBackend) {
+                    selectedLLMBackend = newBackend
+                    preferredLLMBackend = newBackend
+                    // バックエンド切り替え時は解放のみ(ダウンロードはSend押下時)
+                    releaseLLMSamples()
+                }
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+    }
+
+    /** Settingsに表示するダウンロード済みQNNモデルの一覧を更新する。 */
+    private fun refreshQnnModelFileLists() {
+        fun update(category: ModelDownloader.QnnModelCategory, textView: TextView, button: Button) {
+            val files = ModelDownloader.listQnnModelFiles(this, category)
+            textView.text = if (files.isEmpty()) {
+                "No downloaded QNN models"
+            } else {
+                files.joinToString("\n") { file ->
+                    val partial = if (file.name.endsWith(".download")) " (partial)" else ""
+                    "${file.name.removeSuffix(".download")} - ${formatFileSize(file.length())}$partial"
+                }
+            }
+            button.isEnabled = files.isNotEmpty()
+        }
+        update(ModelDownloader.QnnModelCategory.SPEECH, settingsSpeechQnnFilesTextView, settingsSpeechQnnDeleteButton)
+        update(ModelDownloader.QnnModelCategory.LLM, settingsLlmQnnFilesTextView, settingsLlmQnnDeleteButton)
+    }
+
+    private fun formatFileSize(bytes: Long): String {
+        val mb = bytes / (1024.0 * 1024.0)
+        return if (mb >= 1024) String.format(Locale.ROOT, "%.2f GB", mb / 1024) else String.format(Locale.ROOT, "%.0f MB", mb)
+    }
+
+    /** 確認ダイアログを出してから、指定した種類のQNNモデルを削除する。 */
+    private fun confirmDeleteQnnModels(category: ModelDownloader.QnnModelCategory, title: String) {
+        val files = ModelDownloader.listQnnModelFiles(this, category)
+        if (files.isEmpty()) return
+        val totalSize = formatFileSize(files.sumOf { it.length() })
+        AlertDialog.Builder(this)
+            .setTitle("Delete $title QNN models?")
+            .setMessage(files.joinToString("\n") { it.name } + "\n\nTotal: $totalSize")
+            .setPositiveButton("Delete") { _, _ -> deleteQnnModels(category) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun deleteQnnModels(category: ModelDownloader.QnnModelCategory) {
+        // 開いているモデルが削除対象のファイルを参照しないよう、モデルのスレッドで解放してから削除する
+        val deleteFiles = {
+            val failed = ModelDownloader.deleteQnnModelFiles(this, category)
+            runOnUiThreadIfActive {
+                refreshQnnModelFileLists()
+                val message = if (failed.isEmpty()) "Deleted QNN models" else "Failed to delete: ${failed.joinToString { it.name }}"
+                Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+            }
+        }
+        when (category) {
+            ModelDownloader.QnnModelCategory.SPEECH -> runOnModelThread(speechExecutor, speechThread) {
+                speechSample.releaseSpeech()
+                deleteFiles()
+            }
+            ModelDownloader.QnnModelCategory.LLM -> {
+                releaseLLMSamples()
+                runOnModelThread(cameraExecutor, cameraThread) {
+                    SharedLLM.release()
+                    deleteFiles()
+                }
+            }
+        }
     }
 
     /** LLM系の初期化失敗時の表示。ダウンロードに失敗した場合はその理由を優先して表示する。 */
@@ -807,14 +1017,47 @@ class MainActivity : AppCompatActivity() {
         if (downloadError != null) "Status: Model download failed - $downloadError" else "Status: Initialization failed"
 
     /**
-     * LLM系のモデルを解放する。MTPの切り替え時に呼び出す。
-     * MTPのAssistantはインスタンスを作り直さないと外せないため、次のSend押下時に初期化し直す。
+     * QNNのモデルは初期化したスレッドで解放する。
+     * 別スレッドで解放すると、同じプロセスでもう一方(Speech/LLM)がQNN deviceを作るときに
+     * QNN_DEVICE_ERROR_INVALID_CONFIG(14001)で失敗するため。
+     * 対象のスレッド上ならその場で解放し、それ以外は後続の初期化より先に実行されるよう投入する。
      */
-    private fun releaseLLMSamples() {
+    private fun runOnModelThread(executor: ExecutorService, thread: Thread?, block: () -> Unit) {
+        if (Thread.currentThread() === thread) {
+            block()
+            return
+        }
+        try {
+            executor.execute(block)
+        } catch (e: java.util.concurrent.RejectedExecutionException) {
+            Log.w("AILIA_Main", "Model thread is shut down, skipped release: ${e.message}")
+        }
+    }
+
+    /** Speech2Textのモデルを初期化したspeechExecutorで解放する。 */
+    private fun releaseSpeechModel() = runOnModelThread(speechExecutor, speechThread) {
+        speechSample.releaseSpeech()
+    }
+
+    /** LLM/VLM/ALM/Tool Useのモデルを初期化したcameraExecutorで解放する。 */
+    private fun releaseLLMModels(block: () -> Unit = {
         llmSample.release()
         multimodalLLMSample.release()
         almSample.release()
         toolUseSample.release()
+    }) = runOnModelThread(cameraExecutor, cameraThread, block)
+
+    /** LLM / VLM / ALM / Tool Useで共有しているモデルを閉じる。LLM系以外の画面に移るときに呼ぶ。 */
+    private fun releaseSharedLLM() = runOnModelThread(cameraExecutor, cameraThread) {
+        SharedLLM.release()
+    }
+
+    /**
+     * LLM系のモデルを解放する。バックエンドやMTPの切り替え時に呼び出す。
+     * MTPのAssistantはインスタンスを作り直さないと外せないため、次のSend押下時に初期化し直す。
+     */
+    private fun releaseLLMSamples() {
+        releaseLLMModels()
         isInitialized = false
         llmChatContainer.removeAllViews()
         setLLMControlsEnabled(true)
@@ -911,7 +1154,7 @@ class MainActivity : AppCompatActivity() {
                     selectedSpeechModelType = newType
                     stopMicRecording(finalize = false)
                     // モデルダウンロードはRun/Record押下時まで遅延する
-                    speechSample.releaseSpeech()
+                    releaseSpeechModel()
                     isInitialized = false
                     isDownloadingModel.set(false)
                     clearTranscript()
@@ -938,11 +1181,13 @@ class MainActivity : AppCompatActivity() {
                 if (newType != selectedLLMModelType) {
                     selectedLLMModelType = newType
                     // モデル切り替え時は解放のみ(ダウンロードはSend押下時)
-                    llmSample.release()
+                    releaseLLMModels { llmSample.release() }
                     isInitialized = false
                     llmChatContainer.removeAllViews()
                     setLLMControlsEnabled(true)
                     llmStatusTextView.text = "Status: Press Send to run"
+                    // モデルによってQNNモデルの有無が変わるためバックエンド選択を作り直す
+                    setupLLMBackendSpinner()
                 }
             }
             AlgorithmType.MULTIMODAL_LLM, AlgorithmType.ALM, AlgorithmType.TOOL_USE -> {
@@ -950,13 +1195,16 @@ class MainActivity : AppCompatActivity() {
                 if (newType != selectedGemma4ModelType) {
                     selectedGemma4ModelType = newType
                     // モデル切り替え時は解放のみ(ダウンロードはSend押下時)
-                    multimodalLLMSample.release()
-                    almSample.release()
-                    toolUseSample.release()
+                    releaseLLMModels {
+                        multimodalLLMSample.release()
+                        almSample.release()
+                        toolUseSample.release()
+                    }
                     isInitialized = false
                     llmChatContainer.removeAllViews()
                     setLLMControlsEnabled(true)
                     llmStatusTextView.text = "Status: Press Send to run"
+                    setupLLMBackendSpinner(newType)
                 }
             }
             else -> {}
@@ -1091,6 +1339,9 @@ class MainActivity : AppCompatActivity() {
                 // Speaker audio tools are handled asynchronously via their WAV/Mic controls.
                 0
             }
+
+            // Settings has no model to run.
+            AlgorithmType.SETTINGS -> 0
         }
     }
 
@@ -1114,7 +1365,19 @@ class MainActivity : AppCompatActivity() {
         llmOutputLabel,
         llmChatContainer,
         llmStatusTextView,
+        llmEnvSpinner,
         llmMtpSwitch,
+        settingsDebugLabel,
+        settingsQnnFormatLabel,
+        settingsQnnFormatRadioGroup,
+        settingsQnnFormatNoteTextView,
+        settingsDeleteQnnLabel,
+        settingsSpeechQnnLabel,
+        settingsSpeechQnnFilesTextView,
+        settingsSpeechQnnDeleteButton,
+        settingsLlmQnnLabel,
+        settingsLlmQnnFilesTextView,
+        settingsLlmQnnDeleteButton,
         toolUseThinkingSwitch,
         llmBenchmarkButton,
         almInputModeRadioGroup,
@@ -1208,6 +1471,7 @@ class MainActivity : AppCompatActivity() {
             llmOutputLabel,
             llmChatContainer,
             llmStatusTextView,
+            llmEnvSpinner,
             llmMtpSwitch,
         )
 
@@ -1283,6 +1547,20 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.TOOL_USE to llmViews + setOf<View>(toolUseThinkingSwitch),
             AlgorithmType.SPEAKER_VERIFICATION to speakerVerificationViews,
             AlgorithmType.VOICE_FILTER to voiceFilterViews,
+            AlgorithmType.SETTINGS to setOf<View>(
+                resultScrollView,
+                settingsDebugLabel,
+                settingsQnnFormatLabel,
+                settingsQnnFormatRadioGroup,
+                settingsQnnFormatNoteTextView,
+                settingsDeleteQnnLabel,
+                settingsSpeechQnnLabel,
+                settingsSpeechQnnFilesTextView,
+                settingsSpeechQnnDeleteButton,
+                settingsLlmQnnLabel,
+                settingsLlmQnnFilesTextView,
+                settingsLlmQnnDeleteButton,
+            ),
         )
     }
 
@@ -1300,13 +1578,18 @@ class MainActivity : AppCompatActivity() {
             currentAlgorithm == AlgorithmType.MULTIMODAL_LLM ||
             currentAlgorithm == AlgorithmType.ALM ||
             currentAlgorithm == AlgorithmType.TOOL_USE
-        processingTimeTextView.visibility = if (isChatAlgorithm) View.GONE else View.VISIBLE
+        val isSettings = currentAlgorithm == AlgorithmType.SETTINGS
+        processingTimeTextView.visibility = if (isChatAlgorithm || isSettings) View.GONE else View.VISIBLE
+        // Settingsは選ぶモデルがないため、モデル選択を隠す
+        modelSpinner.visibility = if (isSettings) View.GONE else View.VISIBLE
 
         // 表示切り替え時に必要なアルゴリズム固有の初期状態を設定する。
         when (currentAlgorithm) {
             AlgorithmType.SPEECH_TO_TEXT -> {
                 classificationResultTextView.text = "Speech Result: --"
             }
+
+            AlgorithmType.SETTINGS -> refreshQnnModelFileLists()
 
             AlgorithmType.LLM -> {
                 llmInputEditText.setText("Hello!")
@@ -1375,6 +1658,14 @@ class MainActivity : AppCompatActivity() {
             if (needsVisionRunButton()) View.VISIBLE else View.GONE
     }
 
+    /** AiliaLLMを共有する画面。 */
+    private val LLM_ALGORITHMS = setOf(
+        AlgorithmType.LLM,
+        AlgorithmType.MULTIMODAL_LLM,
+        AlgorithmType.ALM,
+        AlgorithmType.TOOL_USE,
+    )
+
     private fun switchAlgorithm(newAlgorithm: AlgorithmType) {
         if (isProcessing.get()) {
             Log.i(
@@ -1389,7 +1680,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun executeAlgorithmSwitch(newAlgorithm: AlgorithmType) {
-        releaseCurrentAlgorithm()
+        // LLM系の画面どうしの切り替えでは、共有しているモデルを閉じずに使い回す
+        releaseCurrentAlgorithm(keepSharedLLM = newAlgorithm in LLM_ALGORITHMS)
         currentAlgorithm = newAlgorithm
         isInitialized = false
         isDownloadingModel.set(false)
@@ -1464,7 +1756,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun releaseCurrentAlgorithm(includeSpeech: Boolean = true) {
+    private fun releaseCurrentAlgorithm(includeSpeech: Boolean = true, keepSharedLLM: Boolean = false) {
         try {
             stopMicRecording(finalize = false)
             poseEstimatorSample.releasePoseEstimator()
@@ -1476,15 +1768,13 @@ class MainActivity : AppCompatActivity() {
             detrSample.release()
             miniLMv2Sample.release()
             trackerSample.releaseTracker()
-            if (includeSpeech) speechSample.releaseSpeech()
+            if (includeSpeech) releaseSpeechModel()
             if (includeSpeech) weSpeakerSample.release()
             if (includeSpeech) voiceFilterSample.release()
             voiceSample.releaseVoice()
-            llmSample.release()
-            multimodalLLMSample.release()
             almRecorder.cancelRecording()
-            almSample.release()
-            toolUseSample.release()
+            releaseLLMModels()
+            if (!keepSharedLLM) releaseSharedLLM()
         } catch (e: Exception) {
             Log.e("AILIA_Error", "Error releasing algorithms: ${e.message}")
         }
@@ -1745,6 +2035,11 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
 
+                AlgorithmType.SETTINGS -> {
+                    // 設定画面は読み込むモデルがない
+                    return
+                }
+
                 AlgorithmType.TEXT_TO_SPEECH -> {
                     // モデルダウンロードはGenerate押下時(setupVoiceGenerateButton)まで遅延する
                     return
@@ -1961,7 +2256,8 @@ class MainActivity : AppCompatActivity() {
     private fun setModelOperationControlsEnabled(enabled: Boolean) {
         // ALMは録音中もSendを押せないようにする
         setLLMControlsEnabled(enabled && !almRecorder.isRecording)
-        // 生成中にMTPや入力ソースを変えるとモデルを解放してしまうため止める
+        // 生成中にバックエンドや入力ソースを変えるとモデルを解放してしまうため止める
+        llmEnvSpinner.isEnabled = enabled
         llmMtpSwitch.isEnabled = enabled
         toolUseThinkingSwitch.isEnabled = enabled
         almRecordButton.isEnabled = enabled
@@ -2072,6 +2368,7 @@ class MainActivity : AppCompatActivity() {
         val operationId = beginModelOperation() ?: return
         val needsInitialization = !isInitialized
         val modelType = selectedLLMModelType
+        val backend = selectedLLMBackend
         val mtpEnabled = llmMtpSwitch.isChecked
         setLLMControlsEnabled(false)
         processingTimeTextView.text = "Processing Time: -- ms"
@@ -2087,6 +2384,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 val initialized = if (needsInitialization) {
                     llmSample.modelType = modelType
+                    llmSample.backend = backend
                     llmSample.mtpEnabled = mtpEnabled
                     llmSample.initialize(this@MainActivity, object : ModelDownloader.DownloadListener {
                         override fun onProgress(bytesDownloaded: Long, totalBytes: Long) {
@@ -2204,6 +2502,7 @@ class MainActivity : AppCompatActivity() {
     private fun performToolUseChat(userInput: String) {
         val operationId = beginModelOperation() ?: return
         val needsInitialization = !isInitialized
+        val backend = selectedLLMBackend
         val modelType = selectedGemma4ModelType
         val mtpEnabled = llmMtpSwitch.isChecked
         val thinking = toolUseThinkingSwitch.isChecked
@@ -2219,6 +2518,7 @@ class MainActivity : AppCompatActivity() {
         cameraExecutor.execute {
             try {
                 val initialized = if (needsInitialization) {
+                    toolUseSample.backend = backend
                     toolUseSample.modelType = modelType
                     toolUseSample.mtpEnabled = mtpEnabled
                     toolUseSample.initialize(this@MainActivity, object : ModelDownloader.DownloadListener {
@@ -2377,6 +2677,7 @@ class MainActivity : AppCompatActivity() {
     private fun performMultimodalChat(userInput: String) {
             val operationId = beginModelOperation() ?: return
             val needsInitialization = !isInitialized
+            val backend = selectedLLMBackend
             val modelType = selectedGemma4ModelType
             val mtpEnabled = llmMtpSwitch.isChecked
             setLLMControlsEnabled(false)
@@ -2442,6 +2743,7 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     val initialized = if (needsInitialization) {
+                        multimodalLLMSample.backend = backend
                         multimodalLLMSample.modelType = modelType
                         multimodalLLMSample.mtpEnabled = mtpEnabled
                         multimodalLLMSample.initialize(this@MainActivity, listener)
@@ -2629,6 +2931,7 @@ class MainActivity : AppCompatActivity() {
         }
         val operationId = beginModelOperation() ?: return
         val needsInitialization = !isInitialized
+        val backend = selectedLLMBackend
         val modelType = selectedGemma4ModelType
         val mtpEnabled = llmMtpSwitch.isChecked
         setLLMControlsEnabled(false)
@@ -2677,6 +2980,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 val initialized = if (needsInitialization) {
+                    almSample.backend = backend
                     almSample.modelType = modelType
                     almSample.mtpEnabled = mtpEnabled
                     almSample.initialize(this@MainActivity, listener)
@@ -2872,7 +3176,7 @@ class MainActivity : AppCompatActivity() {
                     // 言語変更のため要再初期化(ダウンロードはRun/Record押下時)
                     if (currentAlgorithm == AlgorithmType.SPEECH_TO_TEXT) {
                         stopMicRecording(finalize = false)
-                        speechSample.releaseSpeech()
+                        releaseSpeechModel()
                         isInitialized = false
                         isDownloadingModel.set(false)
                         clearTranscript()
@@ -2897,7 +3201,7 @@ class MainActivity : AppCompatActivity() {
                     speechLanguageSpinner.visibility = View.GONE
                     stopMicRecording(finalize = false)
                     // liveモード設定が変わるため要再初期化(ダウンロードはRun押下時)
-                    speechSample.releaseSpeech()
+                    releaseSpeechModel()
                     isInitialized = false
                     isDownloadingModel.set(false)
                     clearTranscript()
@@ -2914,7 +3218,7 @@ class MainActivity : AppCompatActivity() {
                     speechLanguageLabel.visibility = View.VISIBLE
                     speechLanguageSpinner.visibility = View.VISIBLE
                     // liveモード設定が変わるため要再初期化(ダウンロードはRecord押下時)
-                    speechSample.releaseSpeech()
+                    releaseSpeechModel()
                     isInitialized = false
                     isDownloadingModel.set(false)
                     clearTranscript()
@@ -2958,7 +3262,7 @@ class MainActivity : AppCompatActivity() {
     /** 音声認識オプション変更後、次回のRun/Recordで設定を反映する。 */
     private fun resetSpeechForOptionChange() {
         stopMicRecording(finalize = false)
-        speechSample.releaseSpeech()
+        releaseSpeechModel()
         isInitialized = false
         isDownloadingModel.set(false)
         clearTranscript()
@@ -4613,4 +4917,42 @@ internal fun formatDownloadProgress(
     }
     return listOfNotNull("Downloading", fileName?.takeIf { it.isNotBlank() }, sizeText)
         .joinToString(" ")
+}
+
+/** QNN-HTPは公開し、現在使用しないQNN-GPUだけを環境選択から除外する。 */
+internal fun isSelectableAiliaEnvironment(name: String): Boolean =
+    !(name.contains("QNN", ignoreCase = true) && name.contains("GPU", ignoreCase = true))
+
+/** BLASを優先し、利用できない構成ではQNNではなく通常CPUを選ぶ。 */
+internal fun preferredBlasThenCpuEnvironmentIndex(environmentTypes: List<Int>): Int {
+    val blasIndex = environmentTypes.indexOfFirst { it == AiliaEnvironment.TYPE_BLAS }
+    if (blasIndex >= 0) return blasIndex
+
+    val cpuIndex = environmentTypes.indexOfFirst { it == AiliaEnvironment.TYPE_CPU }
+    return cpuIndex.coerceAtLeast(0)
+}
+
+/**
+ * 一部の項目を選択不可(グレー表示)にできるSpinner用アダプタ。
+ * Spinnerのドロップダウンは Adapter.isEnabled を尊重するため、無効な項目はタップできなくなる。
+ */
+private class SelectableArrayAdapter(
+    context: Context,
+    resource: Int,
+    items: Array<String>,
+    private val disabledPositions: Set<Int>,
+) : ArrayAdapter<String>(context, resource, items) {
+    override fun areAllItemsEnabled(): Boolean = disabledPositions.isEmpty()
+
+    override fun isEnabled(position: Int): Boolean = position !in disabledPositions
+
+    override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
+        val view = super.getDropDownView(position, convertView, parent)
+        val enabled = isEnabled(position)
+        (view as? TextView)?.let {
+            it.isEnabled = enabled
+            it.alpha = if (enabled) 1.0f else 0.4f
+        }
+        return view
+    }
 }
