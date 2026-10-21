@@ -11,6 +11,7 @@ import android.widget.RadioGroup
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.test.core.app.ActivityScenario
+import androidx.appcompat.widget.SwitchCompat
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.*
@@ -50,9 +51,15 @@ class VoiceAgentInstrumentedTest {
                 assertFalse(activity.findViewById<View>(R.id.modelSpinner).isShown)
                 val mode = activity.findViewById<RadioGroup>(R.id.voiceAgentInputMode)
                 val queries = activity.findViewById<EditText>(R.id.voiceAgentTestQueries)
+                val speechOutput = activity.findViewById<SwitchCompat>(R.id.voiceAgentSpeechOutput)
+                assertTrue("Speech output should be enabled by default", speechOutput.isChecked)
+                speechOutput.isChecked = false
+                assertFalse(activity.findViewById<Spinner>(R.id.voiceAgentVoiceBackend).isEnabled)
                 assertEquals(R.id.voiceAgentMicInput, mode.checkedRadioButtonId)
                 assertEquals(View.GONE, activity.findViewById<View>(R.id.voiceAgentQueryPanel).visibility)
                 mode.check(R.id.voiceAgentTestInput)
+                assertTrue("Test query synthesis still needs the voice backend",
+                    activity.findViewById<Spinner>(R.id.voiceAgentVoiceBackend).isEnabled)
                 assertEquals(View.VISIBLE, activity.findViewById<View>(R.id.voiceAgentQueryPanel).visibility)
                 queries.setText(" \n ")
                 activity.findViewById<Button>(R.id.voiceAgentStart).performClick()
@@ -72,6 +79,11 @@ class VoiceAgentInstrumentedTest {
             waitForStartEnabled(scenario)
             scenario.onActivity { activity ->
                 activity.findViewById<RadioGroup>(R.id.voiceAgentInputMode).check(R.id.voiceAgentMicInput)
+                val speechOutput = activity.findViewById<SwitchCompat>(R.id.voiceAgentSpeechOutput)
+                assertFalse("Preserve the selected setting when returning from a session", speechOutput.isChecked)
+                assertFalse(activity.findViewById<Spinner>(R.id.voiceAgentVoiceBackend).isEnabled)
+                speechOutput.isChecked = true
+                assertTrue(activity.findViewById<Spinner>(R.id.voiceAgentVoiceBackend).isEnabled)
                 assertEquals(View.GONE, activity.findViewById<View>(R.id.voiceAgentQueryPanel).visibility)
                 activity.findViewById<Button>(R.id.voiceAgentStart).performClick()
                 assertTrue(activity.findViewById<View>(R.id.voiceAgentSession).isShown)
@@ -298,6 +310,7 @@ class VoiceAgentInstrumentedTest {
         val observingMicrophone = AtomicBoolean(false)
         val microphoneReady = CountDownLatch(1)
         val queries = context.getString(R.string.voice_agent_default_queries).lines()
+        val speechOutputEnabled = InstrumentationRegistry.getArguments().getString("voiceAgentSpeechOutput") != "false"
         assertEquals("Exercise a second question after the first answer", 2, queries.size)
         instrumentation.uiAutomation.executeShellCommand("pm grant ${context.packageName} android.permission.RECORD_AUDIO").use {
             FileInputStream(it.fileDescriptor).use { stream -> stream.readBytes() }
@@ -307,11 +320,15 @@ class VoiceAgentInstrumentedTest {
         try {
             instrumentation.runOnMainSync {
                 sample.start(AiliaVoiceAgentSample.Config(cpu.id, true, LLMBackend.QNN, cpu.id,
-                    AiliaVoiceAgentSample.InputMode.SYNTHESIZED_QUERIES, queries),
+                    AiliaVoiceAgentSample.InputMode.SYNTHESIZED_QUERIES, queries, speechOutputEnabled),
                     object : AiliaVoiceAgentSample.Listener {
                         override fun onState(state: AiliaVoiceAgentSample.State) {
                             states += state
-                            if (state == AiliaVoiceAgentSample.State.SPEAKING) answers += latestOutput
+                            if (state == AiliaVoiceAgentSample.State.SPEAKING ||
+                                (!speechOutputEnabled && latestOutput.isNotBlank() &&
+                                    state in setOf(AiliaVoiceAgentSample.State.SYNTHESIZING_QUERY, AiliaVoiceAgentSample.State.TEST_COMPLETE))) {
+                                answers += latestOutput
+                            }
                             if (state == AiliaVoiceAgentSample.State.TEST_COMPLETE) completed.countDown()
                         }
                         override fun onInput(text: String) { inputs += text }
@@ -331,6 +348,7 @@ class VoiceAgentInstrumentedTest {
             instrumentation.waitForIdleSync()
             val report = File(context.getExternalFilesDir(null), "voice-agent-synthesized-test.json")
             val result = JSONObject().put("queries", JSONArray(queries)).put("recognized", JSONArray(inputs))
+                    .put("speech_output_enabled", speechOutputEnabled)
                     .put("answers", JSONArray(answers)).put("states", JSONArray(states.map { it.name }))
                     .put("error", failure ?: JSONObject.NULL)
             report.writeText(result.toString(2))
@@ -345,8 +363,9 @@ class VoiceAgentInstrumentedTest {
             assertFalse(states.contains(AiliaVoiceAgentSample.State.LISTENING))
             val turn = listOf(AiliaVoiceAgentSample.State.SYNTHESIZING_QUERY, AiliaVoiceAgentSample.State.WAITING_QUERY,
                 AiliaVoiceAgentSample.State.PLAYING_QUERY, AiliaVoiceAgentSample.State.SUBMITTING,
-                AiliaVoiceAgentSample.State.RECOGNIZING, AiliaVoiceAgentSample.State.THINKING,
-                AiliaVoiceAgentSample.State.SYNTHESIZING, AiliaVoiceAgentSample.State.SPEAKING)
+                AiliaVoiceAgentSample.State.RECOGNIZING, AiliaVoiceAgentSample.State.THINKING) +
+                if (speechOutputEnabled) listOf(AiliaVoiceAgentSample.State.SYNTHESIZING, AiliaVoiceAgentSample.State.SPEAKING)
+                else emptyList()
             assertEquals(listOf(AiliaVoiceAgentSample.State.PREPARING) + turn + turn +
                 AiliaVoiceAgentSample.State.TEST_COMPLETE, states.toList())
 

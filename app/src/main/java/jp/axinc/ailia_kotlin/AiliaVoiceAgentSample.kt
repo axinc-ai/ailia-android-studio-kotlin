@@ -31,6 +31,7 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
         val voiceEnvId: Int,
         val inputMode: InputMode = InputMode.MICROPHONE,
         val testQueries: List<String> = emptyList(),
+        val speechOutputEnabled: Boolean = true,
     ) {
         init {
             require(inputMode != InputMode.SYNTHESIZED_QUERIES ||
@@ -57,6 +58,7 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
     private var listener: Listener? = null
     private var currentState = State.STOPPING
     @Volatile private var inputMode = InputMode.MICROPHONE
+    private var speechOutputEnabled = true
     // Accessed on the UI thread, except for token-gated recorder callbacks.
     private class MicInput(val recorder: WavRecorder) {
         val hasSamples = AtomicBoolean(false)
@@ -74,6 +76,7 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
         this.listener = listener
         lastPlaybackTail = null
         inputMode = config.inputMode
+        speechOutputEnabled = config.speechOutputEnabled
         isActive = true
         val token = generation.incrementAndGet()
         notifyState(State.PREPARING)
@@ -269,7 +272,7 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
         }
         ensureActive(token)
         emit(token) { listener?.onOutput(response) }
-        speakResponse(token, response)
+        if (speechOutputEnabled) speakResponse(token, response)
     }
 
     private fun speakResponse(token: Long, response: String) {

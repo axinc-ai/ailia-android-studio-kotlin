@@ -53,7 +53,9 @@ internal class VoiceAgentModels(private val context: Context) {
         llmModelFile = checkNotNull(modelFile) { "Gemmaモデルのダウンロードに失敗しました" }
 
         voice.modelType = VoiceModelType.GPT_SOVITS_V2_PRO_DISTILL_BASE
-        check(voice.downloadModel(progress)) { "GPT-SoVITSモデルのダウンロードに失敗しました" }
+        if (config.speechOutputEnabled || config.inputMode == AiliaVoiceAgentSample.InputMode.SYNTHESIZED_QUERIES) {
+            check(voice.downloadModel(progress)) { "GPT-SoVITSモデルのダウンロードに失敗しました" }
+        }
         checkActive()
         history.clear()
         history += AiliaLLMChatMessage("system", "あなたは音声対話アシスタントです。日本語で、自然な話し言葉の1〜3文で簡潔に答えてください。マークダウン、箇条書き、絵文字は使わないでください。")

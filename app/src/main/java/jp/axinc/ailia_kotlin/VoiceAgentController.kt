@@ -15,6 +15,7 @@ import android.widget.EditText
 import android.widget.RadioGroup
 import android.widget.Spinner
 import android.widget.TextView
+import androidx.appcompat.widget.SwitchCompat
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -36,6 +37,8 @@ class VoiceAgentController(
     private val speechBackend: Spinner = activity.findViewById(R.id.voiceAgentSpeechBackend)
     private val llmBackend: Spinner = activity.findViewById(R.id.voiceAgentLlmBackend)
     private val voiceBackend: Spinner = activity.findViewById(R.id.voiceAgentVoiceBackend)
+    private val speechOutput: SwitchCompat = activity.findViewById(R.id.voiceAgentSpeechOutput)
+    private val voiceModelLabel: TextView = activity.findViewById(R.id.voiceAgentVoiceModelLabel)
     private val inputMode: RadioGroup = activity.findViewById(R.id.voiceAgentInputMode)
     private val queryPanel: View = activity.findViewById(R.id.voiceAgentQueryPanel)
     private val testQueries: EditText = activity.findViewById(R.id.voiceAgentTestQueries)
@@ -84,7 +87,9 @@ class VoiceAgentController(
         }
         inputMode.setOnCheckedChangeListener { _, checkedId ->
             queryPanel.visibility = if (checkedId == R.id.voiceAgentTestInput) View.VISIBLE else View.GONE
+            updateVoiceControls()
         }
+        speechOutput.setOnCheckedChangeListener { _, _ -> updateVoiceControls() }
         try {
             Ailia.SetTemporaryCachePath(activity.cacheDir.absolutePath)
             val environments = AiliaModel.getEnvironments().filter { isSelectableAiliaEnvironment(it.name) }
@@ -105,6 +110,7 @@ class VoiceAgentController(
             configure(llmBackend, llmBackends.map { it.displayName }, llmBackends.indexOf(LLMBackend.QNN).coerceAtLeast(0))
             val voiceDefault = voiceEnvironments.indexOfFirst { it.id == cpu[cpuIndex].id }.coerceAtLeast(0)
             configure(voiceBackend, voiceEnvironments.map { it.name }, voiceDefault)
+            updateVoiceControls()
         } catch (e: Exception) {
             showError(e.message ?: "バックエンドの取得に失敗しました")
             start.isEnabled = false
@@ -116,6 +122,13 @@ class VoiceAgentController(
             setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         }
         spinner.setSelection(selection)
+    }
+
+    private fun updateVoiceControls() {
+        val needed = speechOutput.isChecked || inputMode.checkedRadioButtonId == R.id.voiceAgentTestInput
+        voiceBackend.isEnabled = needed
+        voiceBackend.alpha = if (needed) 1f else .4f
+        voiceModelLabel.alpha = voiceBackend.alpha
     }
 
     @Suppress("DEPRECATION")
@@ -141,7 +154,7 @@ class VoiceAgentController(
         val speech = speechEnvironments[speechBackend.selectedItemPosition]
         val config = AiliaVoiceAgentSample.Config(speech.id, speech.qnn,
             llmBackends[llmBackend.selectedItemPosition], voiceEnvironments[voiceBackend.selectedItemPosition].id,
-            inputMode = mode, testQueries = queries)
+            inputMode = mode, testQueries = queries, speechOutputEnabled = speechOutput.isChecked)
         error.visibility = View.GONE
         input.text = ""
         output.text = ""
