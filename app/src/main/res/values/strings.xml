@@ -20,9 +20,18 @@
     <string name="voice_agent_output">音声出力内容</string>
     <string name="voice_agent_input_mic">マイク入力</string>
     <string name="voice_agent_input_test">テスト：GPT-SoVITS合成音声</string>
-    <string name="voice_agent_test_note">1行に1件のクエリを入力してください。選択した音声合成バックエンドで各クエリを合成・再生し、その音声をWhisperへ直接渡します。全件の応答後はキャラクターが落ち着いた動きになり、×で設定へ戻れます。中止ボタンを押すとテストを終了し、マイク入力へ切り替えます。</string>
+    <string name="voice_agent_test_note">1行に1件のクエリを入力してください。初期値は2問です。各クエリを合成・再生し、マイクと同じVADで発話終了を検出してWhisperへ渡します。質問の前に再生残響と無音を入れ、誤送信しないことも確認します。全件の応答後は×で設定へ戻れます。中止するとマイク入力へ切り替えます。</string>
     <string name="voice_agent_default_queries">こんにちは。自己紹介をしてください。\n一足す一はいくつですか。</string>
     <string name="voice_agent_query_hint">テストクエリ（1行に1件）</string>
     <string name="voice_agent_query_required">テストクエリを1行に1件ずつ入力してください</string>
     <string name="voice_agent_test_complete_end">テスト完了。音声対話を終了</string>
+    <string name="voice_agent_status_preparing">準備中</string>
+    <string name="voice_agent_status_listening">音声待機中</string>
+    <string name="voice_agent_status_recognizing">音声認識中</string>
+    <string name="voice_agent_status_thinking">考え中</string>
+    <string name="voice_agent_status_synthesizing">音声合成中</string>
+    <string name="voice_agent_status_speaking">発話中</string>
+    <string name="voice_agent_status_cancelling">中止中</string>
+    <string name="voice_agent_status_complete">テスト完了</string>
+    <string name="voice_agent_status_stopping">終了中</string>
 </resources>

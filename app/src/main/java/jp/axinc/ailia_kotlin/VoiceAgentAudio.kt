@@ -2,36 +2,21 @@ package jp.axinc.ailia_kotlin
 
 import kotlin.math.sqrt
 
-/** Lightweight microphone endpointing; Whisper also applies its Silero VAD before recognition. */
-internal class VoiceAgentEndpoint {
+/** Excludes only the playback settling window; speech decisions belong to ailia Speech/Silero. */
+internal class VoiceAgentInputGate(private val ignoreLeadingSamples: Int = 0) {
     private var samples = 0
-    private var voicedSamples = 0
-    private var silentSamples = 0
-    private var firstVoiceSample = -1
-    val hasSpeech: Boolean get() = voicedSamples >= SAMPLE_RATE / 4
+    val hasInput: Boolean get() = samples > ignoreLeadingSamples
 
-    fun accept(chunk: FloatArray): Boolean {
-        val voiced = rms(chunk) >= 0.012f
-        if (voiced) {
-            if (firstVoiceSample < 0) firstVoiceSample = samples
-            voicedSamples += chunk.size
-            silentSamples = 0
-        } else {
-            silentSamples += chunk.size
-        }
+    fun accept(chunk: FloatArray): FloatArray {
+        val skip = (ignoreLeadingSamples - samples).coerceIn(0, chunk.size)
         samples += chunk.size
-        return hasSpeech && silentSamples >= SAMPLE_RATE
-    }
-
-    fun trim(audio: FloatArray): FloatArray =
-        audio.copyOfRange((firstVoiceSample - SAMPLE_RATE / 3).coerceIn(0, audio.size), audio.size)
-
-    companion object {
-        const val SAMPLE_RATE = 16_000
-        fun rms(samples: FloatArray): Float =
-            if (samples.isEmpty()) 0f else sqrt(samples.sumOf { (it * it).toDouble() } / samples.size).toFloat()
+        return if (skip == 0) chunk else chunk.copyOfRange(skip, chunk.size)
     }
 }
+
+/** Audio level is for animation only, never for deciding when to recognize a turn. */
+internal fun voiceAgentAudioRms(samples: FloatArray): Float =
+    if (samples.isEmpty()) 0f else sqrt(samples.sumOf { (it * it).toDouble() } / samples.size).toFloat()
 
 /** Only remove the timestamp supplied by AiliaSpeechSample; preserve numbers in the utterance. */
 internal fun voiceAgentTranscript(lines: List<String>): String = lines.joinToString(" ") {

@@ -27,6 +27,7 @@ class VoiceAgentOrbView @JvmOverloads constructor(context: Context, attrs: Attri
     private var energy = 0f
     private var lastAudioMs = 0L
     private var lastFrameMs = 0L
+    private var motionPhase = 0f
     private val startedMs = SystemClock.uptimeMillis()
 
     init { importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES }
@@ -39,6 +40,7 @@ class VoiceAgentOrbView @JvmOverloads constructor(context: Context, attrs: Attri
             AiliaVoiceAgentSample.State.PREPARING -> "モデルを準備しています"
             AiliaVoiceAgentSample.State.LISTENING -> "音声入力を待っています"
             AiliaVoiceAgentSample.State.SYNTHESIZING_QUERY -> "テストクエリの音声を合成しています"
+            AiliaVoiceAgentSample.State.WAITING_QUERY -> "次のテスト音声を待っています"
             AiliaVoiceAgentSample.State.PLAYING_QUERY -> "テストクエリの音声を再生しています"
             AiliaVoiceAgentSample.State.SUBMITTING -> "音声を送信しています"
             AiliaVoiceAgentSample.State.RECOGNIZING -> "音声を認識しています"
@@ -53,7 +55,7 @@ class VoiceAgentOrbView @JvmOverloads constructor(context: Context, attrs: Attri
     }
 
     fun setAudio(samples: FloatArray) {
-        val rms = VoiceAgentEndpoint.rms(samples)
+        val rms = voiceAgentAudioRms(samples)
         targetEnergy = (sqrt((rms - .008f).coerceAtLeast(0f)) * 2.2f).coerceAtMost(1f)
         for (i in levels.indices) {
             val start = i * samples.size / levels.size
@@ -75,10 +77,10 @@ class VoiceAgentOrbView @JvmOverloads constructor(context: Context, attrs: Attri
         lastFrameMs = now
         if (now - lastAudioMs > 180) {
             targetEnergy = 0f
-            val decay = exp(-dt / .24f)
+            val decay = exp(-dt / .20f)
             for (i in levels.indices) levels[i] *= decay
         }
-        val smoothing = 1f - exp(-dt / if (targetEnergy > energy) .07f else .24f)
+        val smoothing = 1f - exp(-dt / if (targetEnergy > energy) .045f else .20f)
         energy += (targetEnergy - energy) * smoothing
         val time = (now - startedMs) / 1000f
         val busy = when (state) {
@@ -87,21 +89,25 @@ class VoiceAgentOrbView @JvmOverloads constructor(context: Context, attrs: Attri
             AiliaVoiceAgentSample.State.SYNTHESIZING_QUERY, AiliaVoiceAgentSample.State.CANCELLING -> true
             else -> false
         }
-        val radius = min(width, height) * .30f * (1f + .22f * energy + .018f * sin(time * 1.4f))
-        val cx = width / 2f + radius * .022f * sin(time * .9f)
-        val cy = height / 2f + radius * .035f * sin(time * 1.1f)
-        val stretchX = 1f + .035f * sin(time * 1.2f) + .06f * energy * sin(time * 4.1f)
-        val stretchY = 1f - .035f * sin(time * 1.2f) + .05f * energy * cos(time * 3.7f)
-        val speed = if (busy) 1.8 else 1.0
+        // Integrate speed so audio can accelerate the shape without jumping its phase.
+        motionPhase += dt * ((if (busy) .7f else .35f) + 5.5f * energy)
+        val phase = motionPhase
+        val radius = min(width, height) * .30f *
+            (1f + .32f * energy + .004f * sin(time * .7f) + .016f * energy * sin(phase * 2.1f))
+        val cx = width / 2f + radius * (.005f + .010f * energy) * sin(phase * .9f)
+        val cy = height / 2f + radius * (.007f + .012f * energy) * sin(phase * 1.1f)
+        val stretchX = 1f + .006f * sin(time * .6f) + .065f * energy * sin(phase * 2.2f)
+        val stretchY = 1f - .006f * sin(time * .6f) + .060f * energy * cos(phase * 1.9f)
         for (i in pointsX.indices) {
             val angle = i * PI * 2 / pointsX.size
             val bandPosition = i.toFloat() * levels.size / pointsX.size
             val bandIndex = bandPosition.toInt()
             val fraction = bandPosition - bandIndex
             val band = levels[bandIndex] * (1f - fraction) + levels[(bandIndex + 1) % levels.size] * fraction
-            val wobble = .028 * sin(angle * 3 + time * speed) + .018 * cos(angle * 5 - time * .85) +
-                (if (busy) .022 else .009) * sin(angle * 2 - time * 1.7) +
-                energy * (.055 * sin(angle * 4 + time * 4.3) + .035 * band)
+            val wobble = .007 * sin(angle * 3 + phase) + .004 * cos(angle * 5 - phase * .85) +
+                (if (busy) .007 else .003) * sin(angle * 2 - phase * 1.2) +
+                energy * (.075 * sin(angle * 3 + phase * 2.5) +
+                    .025 * cos(angle * 5 - phase * 3.1) + .020 * band)
             val r = radius * (1 + wobble)
             pointsX[i] = (cx + cos(angle) * r * stretchX).toFloat()
             pointsY[i] = (cy + sin(angle) * r * stretchY).toFloat()

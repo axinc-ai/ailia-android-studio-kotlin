@@ -11,6 +11,15 @@ import kotlin.math.roundToInt
 internal class VoiceAgentPlayer {
     private val playbackLock = Any()
     private var playbackTrack: AudioTrack? = null
+    @Volatile private var lastOutputEndMs = 0L
+
+    /** The speaker/room can still be audible just after AudioTrack has drained or been flushed. */
+    val remainingOutputSettleMs: Long get() = if (lastOutputEndMs == 0L) 0 else
+        (OUTPUT_SETTLE_MS - (SystemClock.elapsedRealtime() - lastOutputEndMs)).coerceAtLeast(0)
+
+    companion object {
+        const val OUTPUT_SETTLE_MS = 400L
+    }
 
     /** Call serially on a worker. Small buffers keep cancellation responsive during long answers. */
     fun play(clip: AudioUtil.WavFileData, checkActive: () -> Unit, onWaveform: (FloatArray) -> Unit) {
@@ -53,7 +62,10 @@ internal class VoiceAgentPlayer {
         } finally {
             synchronized(playbackLock) {
                 if (playbackTrack === track) playbackTrack = null
-                try { track.stop() } finally { track.release() }
+                try { track.stop() } finally {
+                    track.release()
+                    lastOutputEndMs = SystemClock.elapsedRealtime()
+                }
             }
         }
     }
@@ -61,6 +73,7 @@ internal class VoiceAgentPlayer {
     /** May be called from the UI thread; the playback worker remains responsible for release. */
     fun silence() = synchronized(playbackLock) {
         playbackTrack?.let { track ->
+            lastOutputEndMs = SystemClock.elapsedRealtime()
             runCatching { track.pause(); track.flush() }
                 .onFailure { Log.w("VoiceAgent", "Failed to pause playback", it) }
         }

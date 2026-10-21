@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorService) {
     enum class State {
-        PREPARING, LISTENING, SYNTHESIZING_QUERY, PLAYING_QUERY,
+        PREPARING, LISTENING, SYNTHESIZING_QUERY, WAITING_QUERY, PLAYING_QUERY,
         SUBMITTING, RECOGNIZING, THINKING, SYNTHESIZING, SPEAKING, CANCELLING, TEST_COMPLETE, STOPPING
     }
     enum class InputMode { MICROPHONE, SYNTHESIZED_QUERIES }
@@ -53,6 +53,7 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
     private val generation = AtomicLong()
     private val models = VoiceAgentModels(this.context)
     private val player = VoiceAgentPlayer()
+    @Volatile private var lastPlaybackTail: AudioUtil.WavFileData? = null
     private var listener: Listener? = null
     private var currentState = State.STOPPING
     @Volatile private var inputMode = InputMode.MICROPHONE
@@ -60,6 +61,7 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
     private class MicInput(val recorder: WavRecorder) {
         val hasSamples = AtomicBoolean(false)
         val manualSubmit = AtomicBoolean(false)
+        val submitted = AtomicBoolean(false)
     }
     @Volatile private var micInput: MicInput? = null
     var isActive = false
@@ -70,6 +72,7 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
         check(Looper.myLooper() == Looper.getMainLooper())
         if (isActive || stopping) return
         this.listener = listener
+        lastPlaybackTail = null
         inputMode = config.inputMode
         isActive = true
         val token = generation.incrementAndGet()
@@ -95,39 +98,59 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
     private fun listen(token: Long) {
         if (generation.get() != token) return
         notifyState(State.LISTENING)
-        val endpoint = VoiceAgentEndpoint()
+        val gate = VoiceAgentInputGate(
+            (player.remainingOutputSettleMs * WavRecorder.SAMPLE_RATE / 1000).toInt())
         val capture = WavRecorder()
         val turn = MicInput(capture)
         micInput = turn
+        // Capture can start while a cancelled native call is still finishing. All SDK input
+        // queues behind initialization on the owning worker, including manual submission.
+        enqueue(token) { models.startListening { ensureActive(token) } }
         val file = File(context.cacheDir, "voice_agent_$token.wav")
         capture.startRecording(file, object : WavRecorder.RecordingListener {
             override fun onWaveform(chunk: FloatArray, sampleRate: Int) {
-                if (generation.get() != token) return
+                if (generation.get() != token || turn.submitted.get()) return
+                val input = gate.accept(chunk)
+                if (input.isEmpty()) return
                 turn.hasSamples.set(true)
-                emit(token) { listener?.onWaveform(chunk) }
-                if (endpoint.accept(chunk)) capture.stopRecording()
+                emit(token) { listener?.onWaveform(input) }
+                enqueue(token) {
+                    if (!turn.submitted.get() && models.pushSpeech(input, 1, sampleRate)) {
+                        Log.d("VoiceAgent", "Speech Buffered: finalize microphone turn")
+                        finishMicrophoneTurn(token, turn)
+                    }
+                }
             }
             override fun onCompleted(file: File, audio: FloatArray, sampleRate: Int) {
                 file.delete()
                 if (generation.get() != token) return
-                if (!turn.manualSubmit.get() && !endpoint.hasSpeech) {
-                    emit(token) { listen(token) }
-                    return
-                }
-                // Recognition may be queued behind a cancelled native synthesis call.
-                emit(token) { notifyState(State.SUBMITTING) }
-                executor.execute {
-                    try {
-                        respond(token, AudioUtil.WavFileData(sampleRate, 1, endpoint.trim(audio)))
-                        emit(token) { listen(token) }
-                    } catch (_: CancellationException) {
-                    } catch (e: Exception) {
-                        fail(token, e)
-                    }
-                }
+                emit(token) { if (!turn.submitted.get()) notifyState(State.SUBMITTING) }
+                // Also finalizes manual sends / the 30-second recording limit. The submitted
+                // guard prevents late recorder callbacks from finalizing the same turn twice.
+                enqueue(token) { finishMicrophoneTurn(token, turn) }
             }
             override fun onError(error: String) = fail(token, IllegalStateException(error))
         })
+    }
+
+    private fun finishMicrophoneTurn(token: Long, turn: MicInput) {
+        if (!turn.submitted.compareAndSet(false, true)) return
+        turn.recorder.stopRecording()
+        state(token, State.SUBMITTING)
+        respond(token)
+        emit(token) { listen(token) }
+    }
+
+    private fun enqueue(token: Long, action: () -> Unit) {
+        executor.execute {
+            try {
+                ensureActive(token)
+                action()
+            } catch (_: CancellationException) {
+            } catch (error: Exception) {
+                fail(token, error)
+            }
+        }
     }
 
     /** Finish the current recording immediately, including speech too short/quiet for endpointing. */
@@ -158,10 +181,11 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
         return true
     }
 
-    /** Continue after the UI obtains microphone permission for a cancelled test session. */
+    /** Continue after microphone permission is granted, or after a completed automated test. */
     fun resumeMicrophoneInput() {
         check(Looper.myLooper() == Looper.getMainLooper())
-        if (isActive && currentState == State.CANCELLING) {
+        if (isActive && currentState in setOf(State.CANCELLING, State.TEST_COMPLETE)) {
+            inputMode = InputMode.MICROPHONE
             val token = generation.get()
             emit(token) { listen(token) }
         }
@@ -169,31 +193,71 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
 
     companion object {
         val INTERRUPTIBLE_STATES = setOf(State.SUBMITTING, State.RECOGNIZING, State.THINKING,
-            State.SYNTHESIZING, State.SPEAKING, State.SYNTHESIZING_QUERY, State.PLAYING_QUERY)
+            State.SYNTHESIZING, State.SPEAKING, State.SYNTHESIZING_QUERY, State.WAITING_QUERY, State.PLAYING_QUERY)
     }
 
     /** Generated PCM is passed directly to Whisper; neither the microphone nor query text feeds the LLM. */
     private fun runTestQueries(token: Long, queries: List<String>) {
-        for (query in queries) {
+        for ((index, query) in queries.withIndex()) {
+            val echo = lastPlaybackTail
             state(token, State.SYNTHESIZING_QUERY)
             val audio = models.synthesize(query) { ensureActive(token) }
-            state(token, State.PLAYING_QUERY)
-            play(token, audio)
-            respond(token, audio)
+            captureTestQuery(token, audio, echo)
+            Log.d("VoiceAgent", "Test query ${index + 1}/${queries.size} submitted through VAD")
+            state(token, State.SUBMITTING)
+            respond(token)
         }
         // Keep the latest recognized query and answer visible until the user closes the session.
         state(token, State.TEST_COMPLETE)
     }
 
-    private fun respond(token: Long, audio: AudioUtil.WavFileData) {
+    /** Exercise the microphone endpoint with real synthesized PCM, echo, and inter-turn silence. */
+    private fun captureTestQuery(token: Long, audio: AudioUtil.WavFileData,
+                                 echo: AudioUtil.WavFileData?) {
+        val valuesPerSecond = audio.sampleRate * audio.channels
+        val guard = (valuesPerSecond * VoiceAgentPlayer.OUTPUT_SETTLE_MS / 1000).toInt()
+        val gate = VoiceAgentInputGate(guard)
+        val chunkSize = valuesPerSecond / 10
+        state(token, State.WAITING_QUERY)
+        models.startListening { ensureActive(token) }
+        fun feed(chunk: FloatArray): Boolean {
+            ensureActive(token)
+            val input = gate.accept(chunk)
+            return input.isNotEmpty() && models.pushSpeech(input, audio.channels, audio.sampleRate)
+        }
+        // Silero sees silence after the playback tail is excluded, exactly as on microphone input.
+        val tail = if (echo?.sampleRate == audio.sampleRate && echo.channels == audio.channels)
+            echo.audioData.copyOf(guard) else FloatArray(guard)
+        for (offset in tail.indices step chunkSize) {
+            check(!feed(tail.copyOfRange(offset, minOf(offset + chunkSize, tail.size))))
+            Thread.sleep(100)
+        }
+        repeat(12) {
+            check(!feed(FloatArray(chunkSize))) { "再生残響でVADが作動しました" }
+            Thread.sleep(100)
+        }
+        state(token, State.PLAYING_QUERY)
+        play(token, audio)
+        var buffered = false
+        for (offset in audio.audioData.indices step chunkSize) {
+            if (feed(audio.audioData.copyOfRange(offset, minOf(offset + chunkSize, audio.audioData.size)))) {
+                buffered = true
+                break
+            }
+        }
+        repeat(20) { if (!buffered) buffered = feed(FloatArray(chunkSize)) }
+        check(buffered) { "Silero VADがテストクエリの発話終了を検出できませんでした" }
+    }
+
+    private fun respond(token: Long) {
         models.withConversationTurn(isCancelled = { generation.get() != token }) {
-            respondToAudio(token, audio)
+            respondToAudio(token)
         }
     }
 
-    private fun respondToAudio(token: Long, audio: AudioUtil.WavFileData) {
+    private fun respondToAudio(token: Long) {
         state(token, State.RECOGNIZING)
-        val input = models.recognize(audio) { ensureActive(token) }
+        val input = models.finishRecognition { ensureActive(token) }
         if (input.isBlank()) {
             check(inputMode != InputMode.SYNTHESIZED_QUERIES) { "テスト音声を認識できませんでした" }
             return
@@ -233,6 +297,9 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
     private fun play(token: Long, audio: AudioUtil.WavFileData,
                      checkActive: () -> Unit = { ensureActive(token) }) {
         player.play(audio, checkActive) { chunk -> emit(token) { listener?.onWaveform(chunk) } }
+        val tailSize = (audio.sampleRate * audio.channels * VoiceAgentPlayer.OUTPUT_SETTLE_MS / 1000).toInt()
+        lastPlaybackTail = audio.copy(audioData = audio.audioData.copyOfRange(
+            (audio.audioData.size - tailSize).coerceAtLeast(0), audio.audioData.size))
     }
 
     fun stop(error: String? = null) {

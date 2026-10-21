@@ -14,6 +14,7 @@ internal class VoiceAgentModels(private val context: Context) {
     private val speech = AiliaSpeechSample(ModelDownloader.modelDirectory(context))
     private val voice = AiliaVoiceSample(ModelDownloader.modelDirectory(context))
     private var llm: AiliaLLM? = null
+    private var speechTurn: VoiceAgentSpeechTurn? = null
     private lateinit var config: AiliaVoiceAgentSample.Config
     private lateinit var llmModelFile: File
     private val history = mutableListOf<AiliaLLMChatMessage>()
@@ -71,12 +72,22 @@ internal class VoiceAgentModels(private val context: Context) {
         }
     }
 
-    fun recognize(audio: AudioUtil.WavFileData, checkActive: () -> Unit): String {
+    fun startListening(checkActive: () -> Unit) {
+        checkActive()
+        check(speech.initializeSpeech(config.speechEnvId, liveMode = false)) { "Whisperの初期化に失敗しました" }
+        checkActive()
+        speechTurn = speech.createBufferedTurn()
+    }
+
+    fun pushSpeech(audio: FloatArray, channels: Int, sampleRate: Int): Boolean =
+        checkNotNull(speechTurn) { "Speech input not initialized" }.push(audio, channels, sampleRate)
+
+    fun finishRecognition(checkActive: () -> Unit): String {
         val input = try {
-            check(speech.initializeSpeech(config.speechEnvId)) { "Whisperの初期化に失敗しました" }
             checkActive()
-            voiceAgentTranscript(speech.process(audio.audioData, audio.channels, audio.sampleRate))
+            voiceAgentTranscript(checkNotNull(speechTurn).finish(checkActive))
         } finally {
+            speechTurn = null
             speech.releaseSpeech()
         }
         checkActive()
@@ -153,6 +164,7 @@ internal class VoiceAgentModels(private val context: Context) {
     }
 
     fun release(clearHistory: Boolean = true) {
+        speechTurn = null
         speech.releaseSpeech()
         voice.releaseVoice()
         runCatching { llm?.destroy() }.onFailure { Log.w("VoiceAgent", "Failed to release LLM", it) }

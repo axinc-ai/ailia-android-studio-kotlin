@@ -4,39 +4,36 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class VoiceAgentAudioTest {
-    private val silence = FloatArray(1600)
-    private val speech = FloatArray(1600) { if (it % 2 == 0) .1f else -.1f }
-
-    @Test fun silenceDoesNotSubmitEvenAfterThirtySeconds() {
-        val endpoint = VoiceAgentEndpoint()
-        repeat(300) { assertFalse(endpoint.accept(silence)) }
-        assertFalse(endpoint.hasSpeech)
+    @Test fun excludesPlaybackTailBeforeForwardingInput() {
+        val gate = VoiceAgentInputGate(6400)
+        repeat(4) {
+            assertTrue(gate.accept(FloatArray(1600) { .3f }).isEmpty())
+            assertFalse(gate.hasInput)
+        }
+        val speech = FloatArray(1600) { .001f }
+        assertSame(speech, gate.accept(speech))
+        assertTrue(gate.hasInput)
     }
 
-    @Test fun isolatedNoiseDoesNotSubmit() {
-        val endpoint = VoiceAgentEndpoint()
-        endpoint.accept(speech)
-        repeat(20) { assertFalse(endpoint.accept(silence)) }
-        assertFalse(endpoint.hasSpeech)
+    @Test fun preservesSpeechWhenGuardEndsInsideAChunk() {
+        val gate = VoiceAgentInputGate(6500)
+        repeat(4) { gate.accept(FloatArray(1600)) }
+        val input = FloatArray(1600) { it.toFloat() }
+        assertArrayEquals(input.copyOfRange(100, 1600), gate.accept(input), 0f)
+        assertTrue(gate.hasInput)
     }
 
-    @Test fun submitsAfterOneSecondOfSilenceAndKeepsShortPausesInsideTurn() {
-        val endpoint = VoiceAgentEndpoint()
-        repeat(3) { assertFalse(endpoint.accept(speech)) }
-        repeat(9) { assertFalse(endpoint.accept(silence)) }
-        assertFalse(endpoint.accept(speech))
-        repeat(9) { assertFalse(endpoint.accept(silence)) }
-        assertTrue(endpoint.accept(silence))
+    @Test fun silenceAndQuietSpeechAreBothForwardedToSileroWithoutAnAmplitudeGate() {
+        val gate = VoiceAgentInputGate()
+        for (level in listOf(0f, .0001f, .1f)) {
+            val input = FloatArray(1600) { level }
+            assertSame(input, gate.accept(input))
+        }
     }
 
-    @Test fun trimsLongWaitButKeepsPreroll() {
-        val endpoint = VoiceAgentEndpoint()
-        repeat(100) { endpoint.accept(silence) }
-        repeat(3) { endpoint.accept(speech) }
-        val audio = FloatArray(164800) { it.toFloat() }
-        val trimmed = endpoint.trim(audio)
-        assertEquals((160000 - 16000 / 3).toFloat(), trimmed.first())
-        assertEquals(audio.last(), trimmed.last())
+    @Test fun audioLevelRemainsAvailableForAnimation() {
+        assertEquals(0f, voiceAgentAudioRms(FloatArray(0)), 0f)
+        assertEquals(.1f, voiceAgentAudioRms(floatArrayOf(.1f, -.1f)), .00001f)
     }
 
     @Test fun removesOnlySpeechTimestamps() {

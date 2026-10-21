@@ -43,6 +43,7 @@ class VoiceAgentController(
     private val end: Button = activity.findViewById(R.id.voiceAgentEnd)
     private val send: MaterialButton = activity.findViewById(R.id.voiceAgentSend)
     private val error: TextView = activity.findViewById(R.id.voiceAgentError)
+    private val status: TextView = activity.findViewById(R.id.voiceAgentStatus)
     private val progress: TextView = activity.findViewById(R.id.voiceAgentProgress)
     private val input: TextView = activity.findViewById(R.id.voiceAgentInput)
     private val output: TextView = activity.findViewById(R.id.voiceAgentOutput)
@@ -172,6 +173,21 @@ class VoiceAgentController(
             override fun onState(state: AiliaVoiceAgentSample.State) {
                 if (disposed) return
                 currentState = state
+                status.setText(when (state) {
+                    AiliaVoiceAgentSample.State.PREPARING -> R.string.voice_agent_status_preparing
+                    AiliaVoiceAgentSample.State.LISTENING,
+                    AiliaVoiceAgentSample.State.WAITING_QUERY -> R.string.voice_agent_status_listening
+                    AiliaVoiceAgentSample.State.SUBMITTING,
+                    AiliaVoiceAgentSample.State.RECOGNIZING -> R.string.voice_agent_status_recognizing
+                    AiliaVoiceAgentSample.State.THINKING -> R.string.voice_agent_status_thinking
+                    AiliaVoiceAgentSample.State.SYNTHESIZING_QUERY,
+                    AiliaVoiceAgentSample.State.SYNTHESIZING -> R.string.voice_agent_status_synthesizing
+                    AiliaVoiceAgentSample.State.PLAYING_QUERY,
+                    AiliaVoiceAgentSample.State.SPEAKING -> R.string.voice_agent_status_speaking
+                    AiliaVoiceAgentSample.State.CANCELLING -> R.string.voice_agent_status_cancelling
+                    AiliaVoiceAgentSample.State.TEST_COMPLETE -> R.string.voice_agent_status_complete
+                    AiliaVoiceAgentSample.State.STOPPING -> R.string.voice_agent_status_stopping
+                })
                 send.isEnabled = false
                 send.alpha = .35f
                 when {

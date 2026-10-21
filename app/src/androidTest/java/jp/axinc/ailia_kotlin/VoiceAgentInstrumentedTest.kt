@@ -25,6 +25,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.sin
 
 @RunWith(AndroidJUnit4::class)
@@ -117,7 +118,7 @@ class VoiceAgentInstrumentedTest {
                 assertEquals("音声を送信しています", activity.findViewById<VoiceAgentOrbView>(R.id.voiceAgentOrb).contentDescription)
             }
             var recognizing = false
-            val recognitionDeadline = SystemClock.elapsedRealtime() + 5000
+            val recognitionDeadline = SystemClock.elapsedRealtime() + 30_000
             while (!recognizing && SystemClock.elapsedRealtime() < recognitionDeadline) {
                 scenario.onActivity {
                     recognizing = it.findViewById<VoiceAgentOrbView>(R.id.voiceAgentOrb).contentDescription == "音声を認識しています"
@@ -273,7 +274,7 @@ class VoiceAgentInstrumentedTest {
         fail("Expected $state but was $actual")
     }
 
-    /** Uses the public start path and real GPT-SoVITS query audio; no microphone or private hooks. */
+    /** Two generated questions pass through VAD; then real microphone capture must remain idle. */
     @Test(timeout = 600_000) fun synthesizedQueriesCompleteTwoVoiceTurns() {
         assumeTrue("Enable explicitly on a device with cached models", InstrumentationRegistry.getArguments().getString("voiceAgentNative") == "true")
         val context = instrumentation.targetContext
@@ -294,7 +295,13 @@ class VoiceAgentInstrumentedTest {
         val answers = CopyOnWriteArrayList<String>()
         val completed = CountDownLatch(1)
         val stopped = CountDownLatch(1)
+        val observingMicrophone = AtomicBoolean(false)
+        val microphoneReady = CountDownLatch(1)
         val queries = context.getString(R.string.voice_agent_default_queries).lines()
+        assertEquals("Exercise a second question after the first answer", 2, queries.size)
+        instrumentation.uiAutomation.executeShellCommand("pm grant ${context.packageName} android.permission.RECORD_AUDIO").use {
+            FileInputStream(it.fileDescriptor).use { stream -> stream.readBytes() }
+        }
         var latestOutput = ""
         var failure: String? = null
         try {
@@ -309,7 +316,9 @@ class VoiceAgentInstrumentedTest {
                         }
                         override fun onInput(text: String) { inputs += text }
                         override fun onOutput(text: String) { latestOutput = text }
-                        override fun onWaveform(samples: FloatArray) = Unit
+                        override fun onWaveform(samples: FloatArray) {
+                            if (observingMicrophone.get()) microphoneReady.countDown()
+                        }
                         override fun onDownload(fileName: String, downloaded: Long, total: Long) = Unit
                         override fun onStopped(error: String?) {
                             failure = error
@@ -320,22 +329,45 @@ class VoiceAgentInstrumentedTest {
             }
             assertTrue("Synthesized query test timed out", completed.await(540, TimeUnit.SECONDS))
             instrumentation.waitForIdleSync()
-            File(context.getExternalFilesDir(null), "voice-agent-synthesized-test.json").writeText(
-                JSONObject().put("queries", JSONArray(queries)).put("recognized", JSONArray(inputs))
+            val report = File(context.getExternalFilesDir(null), "voice-agent-synthesized-test.json")
+            val result = JSONObject().put("queries", JSONArray(queries)).put("recognized", JSONArray(inputs))
                     .put("answers", JSONArray(answers)).put("states", JSONArray(states.map { it.name }))
-                    .put("error", failure ?: JSONObject.NULL).toString(2))
+                    .put("error", failure ?: JSONObject.NULL)
+            report.writeText(result.toString(2))
             assertNull("Voice agent failed", failure)
             assertEquals(2, inputs.size)
             assertTrue(inputs.first().contains("自己紹介"))
+            assertTrue("The second question must also be recognized: ${inputs.last()}",
+                inputs.last().contains("1") || inputs.last().contains("一"))
             assertEquals(2, answers.size)
             assertTrue(answers.all { it.isNotBlank() })
             assertTrue("Expected an answer of two: ${answers.last()}", answers.last().contains("2") || answers.last().contains("二"))
             assertFalse(states.contains(AiliaVoiceAgentSample.State.LISTENING))
-            val turn = listOf(AiliaVoiceAgentSample.State.SYNTHESIZING_QUERY, AiliaVoiceAgentSample.State.PLAYING_QUERY,
+            val turn = listOf(AiliaVoiceAgentSample.State.SYNTHESIZING_QUERY, AiliaVoiceAgentSample.State.WAITING_QUERY,
+                AiliaVoiceAgentSample.State.PLAYING_QUERY, AiliaVoiceAgentSample.State.SUBMITTING,
                 AiliaVoiceAgentSample.State.RECOGNIZING, AiliaVoiceAgentSample.State.THINKING,
                 AiliaVoiceAgentSample.State.SYNTHESIZING, AiliaVoiceAgentSample.State.SPEAKING)
             assertEquals(listOf(AiliaVoiceAgentSample.State.PREPARING) + turn + turn +
                 AiliaVoiceAgentSample.State.TEST_COMPLETE, states.toList())
+
+            // Normal turn completion must also survive the speaker-to-real-microphone handover.
+            val baseline = states.size
+            val beforeResume = SystemClock.elapsedRealtime()
+            observingMicrophone.set(true)
+            instrumentation.runOnMainSync { sample.resumeMicrophoneInput() }
+            assertTrue("Microphone did not resume", microphoneReady.await(5, TimeUnit.SECONDS))
+            // Capture resumes before Whisper is loaded. Wait for SDK initialization and the
+            // already queued pushes, so the idle assertion actually exercises Silero.
+            executor.submit {}.get(30, TimeUnit.SECONDS)
+            result.put("microphone_sdk_ready_ms", SystemClock.elapsedRealtime() - beforeResume)
+            SystemClock.sleep(2200)
+            executor.submit {}.get(30, TimeUnit.SECONDS)
+            val microphoneStates = states.drop(baseline)
+            result.put("microphone_resume_states", JSONArray(microphoneStates.map { it.name }))
+                .put("microphone_observed_ms", SystemClock.elapsedRealtime() - beforeResume)
+            report.writeText(result.toString(2))
+            assertEquals("No automatic VAD submission after playback without a new utterance",
+                listOf(AiliaVoiceAgentSample.State.LISTENING), microphoneStates)
         } finally {
             instrumentation.runOnMainSync { sample.stop() }
             assertTrue("Models were not released", stopped.await(30, TimeUnit.SECONDS))
@@ -352,6 +384,56 @@ class VoiceAgentInstrumentedTest {
             SystemClock.sleep(50)
         }
         fail("Start button did not become enabled after cancellation")
+    }
+
+    @Test(timeout = 240_000) fun speechBufferedRecognizesQuietInputAndResetsForTheNextQuestion() {
+        assumeTrue(InstrumentationRegistry.getArguments().getString("voiceAgentNative") == "true")
+        val context = instrumentation.targetContext
+        System.loadLibrary("ailia")
+        axip.ailia.Ailia.SetTemporaryCachePath(context.cacheDir.absolutePath)
+        val qnnFile = QnnSupport.speechQnnFileName(SpeechModelType.WHISPER_LARGE_V3_TURBO)
+        assumeTrue(qnnFile != null && File(ModelDownloader.modelDirectory(context), qnnFile).exists())
+        val cpu = axip.ailia.AiliaModel.getEnvironments().first {
+            it.type == axip.ailia.AiliaEnvironment.TYPE_CPU && !QnnSupport.isQnnEnvironmentName(it.name)
+        }
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            executor.submit {
+                val speech = AiliaSpeechSample(ModelDownloader.modelDirectory(context)).apply {
+                    currentModelType = SpeechModelType.WHISPER_LARGE_V3_TURBO
+                    useQnn = true
+                    language = "ja"
+                }
+                try {
+                    assertTrue(speech.downloadModel())
+                    assertTrue(speech.initializeSpeech(cpu.id, liveMode = false))
+                    val turn = speech.createBufferedTurn()
+                    val reference = AudioUtil().loadRawAudio(context.resources.openRawResource(R.raw.reference_audio_girl))
+                    val audio = SpeakerVerificationAudio.toMono16k(reference.audioData, reference.channels, reference.sampleRate)
+                    val baseRms = voiceAgentAudioRms(audio)
+                    val results = JSONArray()
+                    for (gain in listOf(1f, .006f / baseRms)) {
+                        repeat(15) { assertFalse("Reset must not leave the previous utterance buffered",
+                            turn.push(FloatArray(1600), 1, 16000)) }
+                        val input = FloatArray(audio.size) { audio[it] * gain }
+                        var buffered = false
+                        for (offset in input.indices step 1600) {
+                            buffered = turn.push(input.copyOfRange(offset, minOf(offset + 1600, input.size)), 1, 16000)
+                            if (buffered) break
+                        }
+                        repeat(20) { if (!buffered) buffered = turn.push(FloatArray(1600), 1, 16000) }
+                        assertTrue("Silero must detect speech even below the old RMS threshold", buffered)
+                        val text = voiceAgentTranscript(turn.finish {})
+                        assertTrue("Speech should be transcribed: $text", text.isNotBlank())
+                        results.put(JSONObject().put("rms", voiceAgentAudioRms(input).toDouble())
+                            .put("recognized", text).put("buffered", buffered))
+                    }
+                    repeat(15) { assertFalse(turn.push(FloatArray(1600), 1, 16000)) }
+                    assertTrue("Silence after reset must not repeat previous text", turn.finish {}.isEmpty())
+                    File(context.getExternalFilesDir(null), "voice-agent-silero-buffered-test.json").writeText(results.toString(2))
+                } finally { speech.releaseSpeech() }
+            }.get(220, TimeUnit.SECONDS)
+        } finally { executor.shutdown() }
     }
 
     private fun screenshot(name: String) {
