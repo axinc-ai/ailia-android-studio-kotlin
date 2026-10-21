@@ -308,6 +308,38 @@ class AiliaSpeechSample(private val modelDirectory: File) {
         transcribeTimeListener?.invoke((System.nanoTime() - startNanos) / 1_000_000)
     }
 
+    /** Non-LIVE input: Buffered is raised by Silero endpointing or the SDK's 30-second limit. */
+    internal fun createBufferedTurn(): VoiceAgentSpeechTurn {
+        val engine = checkNotNull(speech) { "Speech model not initialized" }
+        check(!liveModeEnabled) { "Buffered endpoint detection requires non-LIVE mode" }
+        // Short Japanese replies should not require the general sample's one-second speech start.
+        requireSuccess("setSilentThreshold", engine.setSilentThreshold(0.5f, 0.25f, 1.0f))
+        Log.i(TAG, "Speech endpoint: Silero VAD, threshold=0.5, speechSec=0.25, noSpeechSec=1.0, non-LIVE")
+        fun flag(operation: String, value: Int): Boolean {
+            check(value in 0..1) { "$operation failed ($value): ${engine.getErrorDetail()}" }
+            return value == 1
+        }
+        return VoiceAgentSpeechTurn(object : VoiceAgentSpeechTurn.Engine {
+            override fun pushInputData(audio: FloatArray, channels: Int, sampleRate: Int) {
+                requireSuccess("pushInputData", engine.pushInputData(audio, channels, audio.size / channels, sampleRate))
+            }
+            override fun buffered() = flag("buffered", engine.getBuffered())
+            override fun finalizeInputData() {
+                requireSuccess("finalizeInputData", engine.finalizeInputData())
+                Log.i(TAG, "Speech endpoint: finalizeInputData")
+            }
+            override fun transcribe(): List<String> {
+                transcribeOnce(engine)
+                return collectTextLines(engine)
+            }
+            override fun complete() = flag("complete", engine.getComplete())
+            override fun resetTranscribeState() {
+                requireSuccess("resetTranscribeState", engine.resetTranscribeState())
+                Log.i(TAG, "Speech endpoint: resetTranscribeState")
+            }
+        })
+    }
+
     /**
      * Pushes live audio data for streaming recognition (live mode).
      * Does NOT call finalizeInputData - use finalizeLiveAudio() when recording stops.

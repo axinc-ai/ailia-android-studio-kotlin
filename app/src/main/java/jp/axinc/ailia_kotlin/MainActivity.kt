@@ -143,6 +143,8 @@ class MainActivity : AppCompatActivity() {
     private val multimodalLLMSample = AiliaMultimodalLLMSample(MultimodalMediaType.IMAGE)
     private val almSample = AiliaMultimodalLLMSample(MultimodalMediaType.AUDIO)
     private val toolUseSample = AiliaToolUseSample()
+    private var voiceAgentController: VoiceAgentController? = null
+    private lateinit var voiceAgentSetup: View
     private val almRecorder = WavRecorder()
     private val onnxObjectDetectionSample by lazy { AiliaOnnxObjectDetectionSample(modelDirectory) }
     private val onnxClassificationSample by lazy { AiliaOnnxClassificationSample(modelDirectory) }
@@ -292,6 +294,7 @@ class MainActivity : AppCompatActivity() {
         MULTIMODAL_LLM,
         ALM,
         TOOL_USE,
+        VOICE_AGENT,
         SPEAKER_VERIFICATION,
         VOICE_FILTER,
         SETTINGS,
@@ -304,6 +307,7 @@ class MainActivity : AppCompatActivity() {
 
         private const val REQUEST_CODE_CAMERA_PERMISSION = 10
         private const val REQUEST_CODE_AUDIO_PERMISSION = 11
+        private const val REQUEST_CODE_VOICE_AGENT_PERMISSION = 12
 
         /** ALMの既定プロンプト。入力音声の内容を説明させる。 */
         private const val ALM_DEFAULT_PROMPT = "入力された音声の内容を説明してください"
@@ -358,6 +362,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initializeViews() {
+        voiceAgentSetup = findViewById(R.id.voiceAgentSetup)
         imageView = findViewById(R.id.imageView)
         cameraPreviewView = findViewById(R.id.cameraPreviewView)
         modeRadioGroup = findViewById(R.id.modeRadioGroup)
@@ -479,6 +484,7 @@ class MainActivity : AppCompatActivity() {
             "VLM",
             "ALM",
             "ToolUse",
+            "Voice Agent",
             "SpeakerVerification",
             "VoiceFilter",
             "Settings",
@@ -893,6 +899,7 @@ class MainActivity : AppCompatActivity() {
                 selectedRuntime = "ONNX"
                 arrayOf("VoiceFilter + dynamic d-vector embedder + Silero VAD v6")
             }
+            AlgorithmType.VOICE_AGENT -> arrayOf("Voice Agent")
             AlgorithmType.SETTINGS -> arrayOf("Settings")
         }
 
@@ -1416,12 +1423,13 @@ class MainActivity : AppCompatActivity() {
             }
 
             // Settings has no model to run.
-            AlgorithmType.SETTINGS -> 0
+            AlgorithmType.SETTINGS, AlgorithmType.VOICE_AGENT -> 0
         }
     }
 
     /** updateUIVisibilityで管理するView。可視性の初期値はすべてGONEにする。 */
     private fun managedAlgorithmViews(): List<View> = listOf(
+        voiceAgentSetup,
         modeRadioGroup,
         imageView,
         cameraPreviewView,
@@ -1620,6 +1628,7 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.MULTIMODAL_LLM to multimodalViews,
             AlgorithmType.ALM to almViews,
             AlgorithmType.TOOL_USE to llmViews + setOf<View>(toolUseThinkingSwitch),
+            AlgorithmType.VOICE_AGENT to setOf(voiceAgentSetup),
             AlgorithmType.SPEAKER_VERIFICATION to speakerVerificationViews,
             AlgorithmType.VOICE_FILTER to voiceFilterViews,
             AlgorithmType.SETTINGS to setOf<View>(
@@ -1654,9 +1663,10 @@ class MainActivity : AppCompatActivity() {
             currentAlgorithm == AlgorithmType.ALM ||
             currentAlgorithm == AlgorithmType.TOOL_USE
         val isSettings = currentAlgorithm == AlgorithmType.SETTINGS
-        processingTimeTextView.visibility = if (isChatAlgorithm || isSettings) View.GONE else View.VISIBLE
+        val isVoiceAgent = currentAlgorithm == AlgorithmType.VOICE_AGENT
+        processingTimeTextView.visibility = if (isChatAlgorithm || isSettings || isVoiceAgent) View.GONE else View.VISIBLE
         // Settingsは選ぶモデルがないため、モデル選択を隠す
-        modelSpinner.visibility = if (isSettings) View.GONE else View.VISIBLE
+        modelSpinner.visibility = if (isSettings || isVoiceAgent) View.GONE else View.VISIBLE
 
         // 表示切り替え時に必要なアルゴリズム固有の初期状態を設定する。
         when (currentAlgorithm) {
@@ -1755,6 +1765,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun executeAlgorithmSwitch(newAlgorithm: AlgorithmType) {
+        voiceAgentController?.stop()
         // LLM系の画面どうしの切り替えでは、共有しているモデルを閉じずに使い回す
         releaseCurrentAlgorithm(keepSharedLLM = newAlgorithm in LLM_ALGORITHMS)
         currentAlgorithm = newAlgorithm
@@ -1816,6 +1827,22 @@ class MainActivity : AppCompatActivity() {
             }
             AlgorithmType.TOOL_USE -> {
                 setupToolUseSendButton()
+            }
+            AlgorithmType.VOICE_AGENT -> {
+                stopCamera()
+                if (voiceAgentController == null) {
+                    voiceAgentController = VoiceAgentController(this, cameraExecutor,
+                        requestMicrophone = {
+                            ActivityCompat.requestPermissions(this,
+                                arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_CODE_VOICE_AGENT_PERMISSION)
+                        },
+                        showSession = { active ->
+                            rootScrollView.visibility = if (active) View.GONE else View.VISIBLE
+                            findViewById<View>(R.id.voiceAgentSession).visibility = if (active) View.VISIBLE else View.GONE
+                            if (active || currentAlgorithm == AlgorithmType.VOICE_AGENT) processingTimeTextView.visibility = View.GONE
+                            ViewCompat.requestApplyInsets(findViewById(R.id.rootLayout))
+                        })
+                }
             }
             AlgorithmType.SPEAKER_VERIFICATION -> {
                 setupSpeakerVerificationControls()
@@ -2110,7 +2137,7 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
 
-                AlgorithmType.SETTINGS -> {
+                AlgorithmType.SETTINGS, AlgorithmType.VOICE_AGENT -> {
                     // 設定画面は読み込むモデルがない
                     return
                 }
@@ -4661,7 +4688,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         // ALM / ToolUseはSend押下時にダウンロード+初期化する
-        if (currentAlgorithm == AlgorithmType.ALM || currentAlgorithm == AlgorithmType.TOOL_USE) {
+        if (currentAlgorithm == AlgorithmType.ALM || currentAlgorithm == AlgorithmType.TOOL_USE ||
+            currentAlgorithm == AlgorithmType.VOICE_AGENT) {
             return
         }
 
@@ -4922,6 +4950,7 @@ class MainActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
         when (requestCode) {
+            REQUEST_CODE_VOICE_AGENT_PERMISSION -> voiceAgentController?.onMicrophonePermission(granted)
             REQUEST_CODE_CAMERA_PERMISSION -> if (granted) {
                 modeRadioGroup.check(R.id.cameraRadioButton)
             } else {
@@ -4950,7 +4979,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onStop() {
+        voiceAgentController?.stop()
+        super.onStop()
+    }
+
     override fun onDestroy() {
+        voiceAgentController?.close()
         activityDestroyed.set(true)
         lastSpeakerMicAudio = null
         lastVoiceFilterMicAudio = null
