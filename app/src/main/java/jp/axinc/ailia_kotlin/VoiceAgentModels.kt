@@ -12,6 +12,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.concurrent.CancellationException
 
 /**
  * Owns downloads, inference and conversation history. Call only on the session's model executor:
@@ -25,6 +26,7 @@ internal class VoiceAgentModels(private val context: Context) {
     private lateinit var config: AiliaVoiceAgentSample.Config
     private lateinit var llmModelFile: File
     private lateinit var projectorFile: File
+    private var mtpModelFile: File? = null
     // Each entry is one complete voice turn, including tool calls/results and captured images.
     private val history = mutableListOf<MutableList<JSONObject>>()
     private val tools = VoiceAgentTools()
@@ -52,26 +54,28 @@ internal class VoiceAgentModels(private val context: Context) {
             checkNotNull(QnnSupport.llmQnnFileName(modelType)) { "この端末ではGemmaのQNNを使用できません" }
         } else null
         val fileName = qnnFile ?: modelType.fileName
-        val llmProgress = object : ModelDownloader.DownloadListener {
-            override fun onProgress(bytesDownloaded: Long, totalBytes: Long) = progress.onProgress(fileName, bytesDownloaded, totalBytes)
+        fun llmProgress(name: String) = object : ModelDownloader.DownloadListener {
+            override fun onProgress(bytesDownloaded: Long, totalBytes: Long) = progress.onProgress(name, bytesDownloaded, totalBytes)
             override fun onComplete(file: File) = Unit
             override fun onError(error: String) = progress.onError(error)
         }
-        val modelFile = if (qnnFile != null) ModelDownloader.downloadQnnLLMModel(context, fileName, llmProgress)
-            else ModelDownloader.downloadLLMModel(context, fileName, llmProgress)
+        val modelFile = if (qnnFile != null) ModelDownloader.downloadQnnLLMModel(context, fileName, llmProgress(fileName))
+            else ModelDownloader.downloadLLMModel(context, fileName, llmProgress(fileName))
         checkActive()
         llmModelFile = checkNotNull(modelFile) { "Gemmaモデルのダウンロードに失敗しました" }
 
         val projectorName = checkNotNull(SharedLLM.projectorFileName(modelType, config.llmBackend)) {
             "このモデルでは画像入力を使用できません"
         }
-        val projectorProgress = object : ModelDownloader.DownloadListener {
-            override fun onProgress(bytesDownloaded: Long, totalBytes: Long) = progress.onProgress(projectorName, bytesDownloaded, totalBytes)
-            override fun onComplete(file: File) = Unit
-            override fun onError(error: String) = progress.onError(error)
-        }
-        projectorFile = checkNotNull(SharedLLM.download(context, projectorName, config.llmBackend, projectorProgress)) {
+        projectorFile = checkNotNull(SharedLLM.download(context, projectorName, config.llmBackend, llmProgress(projectorName))) {
             "画像エンコーダのダウンロードに失敗しました"
+        }
+        checkActive()
+
+        mtpModelFile = LLMMtp.assistantFileName(modelType, config.llmBackend)?.let { name ->
+            checkNotNull(LLMMtp.download(context, name, config.llmBackend, llmProgress(name))) {
+                "MTP Assistantのダウンロードに失敗しました"
+            }
         }
         checkActive()
 
@@ -84,15 +88,20 @@ internal class VoiceAgentModels(private val context: Context) {
         tools.reset()
     }
 
-    /** Roll back the complete voice turn if any part, including playback, is cancelled. */
+    /** Keep generated replies on cancellation; roll back only turns with no assistant content or calls. */
     fun withConversationTurn(isCancelled: () -> Boolean, action: () -> Unit) {
         val historyBeforeTurn = history.toList()
         try {
             action()
         } finally {
             if (isCancelled()) {
-                history.clear()
-                history.addAll(historyBeforeTurn)
+                val current = history.lastOrNull()
+                val hasReply = current != null && historyBeforeTurn.none { it === current } &&
+                    current.any { it.optString("role") == "assistant" }
+                if (!hasReply) {
+                    history.clear()
+                    history.addAll(historyBeforeTurn)
+                }
             }
         }
     }
@@ -127,14 +136,22 @@ internal class VoiceAgentModels(private val context: Context) {
                          takePhoto: () -> File, onPhoto: (File) -> Unit, onOutput: (String) -> Unit): String {
         val model = AiliaLLM()
         llm = model
+        var currentTurn: MutableList<JSONObject>? = null
+        var partialReply = ""
+        val photos = mutableListOf<JSONObject>()
         try {
             model.openModelFile(llmModelFile.absolutePath, if (config.llmBackend == LLMBackend.QNN) 0 else 4096)
+            checkActive()
+            mtpModelFile?.let { file ->
+                check(LLMMtp.open(model, file.absolutePath)) { "MTPの初期化に失敗しました" }
+            }
             model.openMultimodalProjectorFile(projectorFile.absolutePath)
             checkActive()
             // Keep whole user turns: assistant tool calls and their results must stay together.
             while (history.size >= 4) removeOldestTurn()
             val turn = mutableListOf(JSONObject().put("role", "user").put("content", input))
             history += turn
+            currentTurn = turn
             val contextSize = model.getContextSize()
             val definitions = tools.definitions()
             val fixedTokens = model.getTokenCount(definitions) + model.getTokenCount(SYSTEM_PROMPT) + 64
@@ -154,16 +171,23 @@ internal class VoiceAgentModels(private val context: Context) {
                 check(generationLimit > 0) { "音声入力が長すぎます。対話を開始し直してください" }
                 var complete = false
                 val preview = VoiceAgentTextStream()
-                var displayed = ""
+                val generated = StringBuilder()
+                var generatedTokens = 0
+                val batchLimit = if (mtpModelFile != null) LLMMtp.N_DRAFT + 1 else 1
                 for (step in 0 until generationLimit) {
+                    // One MTP step can commit multiple tokens. Reserve a complete batch.
+                    if (generatedTokens + batchLimit > generationLimit) break
                     checkActive()
                     complete = model.generate()
                     if (complete) break
-                    val text = preview.append(model.getDeltaText())
-                    if (text != displayed) {
+                    val delta = model.getDeltaText()
+                    generated.append(delta)
+                    generatedTokens = model.getTokenCount(generated.toString())
+                    val text = preview.append(delta)
+                    if (text != partialReply) {
                         checkActive()
+                        partialReply = text
                         onOutput(text)
-                        displayed = text
                     }
                 }
                 checkActive()
@@ -171,6 +195,7 @@ internal class VoiceAgentModels(private val context: Context) {
                 val response = JSONObject(model.getResponseJson())
                 Log.d("VoiceAgent", "Response JSON: $response")
                 turn += response
+                partialReply = ""
                 val calls = response.optJSONArray("tool_calls")
                 if (calls == null || calls.length() == 0) {
                     val text = response.optString("content").trim()
@@ -180,7 +205,6 @@ internal class VoiceAgentModels(private val context: Context) {
                 }
                 // A tool round may contain introductory prose; the next round starts a new preview.
                 onOutput("")
-                val photos = mutableListOf<JSONObject>()
                 for (index in 0 until calls.length()) {
                     checkActive()
                     val call = calls.getJSONObject(index)
@@ -190,9 +214,10 @@ internal class VoiceAgentModels(private val context: Context) {
                         val file = takePhoto()
                         try {
                             checkActive()
-                            photos += photoPart(file)
+                            val image = photoPart(file)
                             checkActive()
                             onPhoto(file)
+                            photos += image
                             file
                         } catch (error: Exception) {
                             file.delete()
@@ -203,17 +228,47 @@ internal class VoiceAgentModels(private val context: Context) {
                     turn += JSONObject().put("role", "tool")
                         .put("tool_call_id", call.getString("id")).put("content", result)
                 }
-                // The SDK accepts media in user messages; finish all matched tool results first.
-                if (photos.isNotEmpty()) {
-                    turn += JSONObject().put("role", "user").put("content", JSONArray()
-                        .put(JSONObject().put("type", "text").put("text", "撮影した写真です。元の依頼に、この写真を踏まえて答えてください。"))
-                        .apply { photos.forEach { put(it) } })
-                }
+                appendPhotos(turn, photos)
             }
             error("ツールの呼び出しが上限に達しました。もう一度短く話しかけてください")
+        } catch (cancelled: CancellationException) {
+            currentTurn?.let { turn ->
+                completeInterruptedTools(turn)
+                appendPhotos(turn, photos)
+                if (partialReply.isNotBlank()) {
+                    turn += JSONObject().put("role", "assistant").put("content", partialReply.trimEnd())
+                }
+            }
+            throw cancelled
         } finally {
             model.destroy()
             llm = null
+        }
+    }
+
+    private fun appendPhotos(turn: MutableList<JSONObject>, photos: MutableList<JSONObject>) {
+        if (photos.isEmpty()) return
+        // The SDK accepts media in user messages, following the matched tool results.
+        turn += JSONObject().put("role", "user").put("content", JSONArray()
+            .put(JSONObject().put("type", "text").put("text", "撮影した写真です。元の依頼に、この写真を踏まえて答えてください。"))
+            .apply { photos.forEach { put(it) } })
+        photos.clear()
+    }
+
+    /** Keep already executed calls, and resolve interrupted/unstarted calls without executing them. */
+    private fun completeInterruptedTools(turn: MutableList<JSONObject>) {
+        val assistant = turn.indexOfLast { it.optString("role") == "assistant" }
+        if (assistant < 0) return
+        val calls = turn[assistant].optJSONArray("tool_calls") ?: return
+        val results = turn.drop(assistant + 1).takeWhile { it.optString("role") == "tool" }
+        val returnedIds = results.map { it.optString("tool_call_id") }.toSet()
+        var position = assistant + 1 + results.size
+        for (index in 0 until calls.length()) {
+            val id = calls.getJSONObject(index).getString("id")
+            if (id !in returnedIds) {
+                val result = JSONObject().put("error", "ユーザーが応答を中断したため、ツールの完了を確認できませんでした。")
+                turn.add(position++, JSONObject().put("role", "tool").put("tool_call_id", id).put("content", result.toString()))
+            }
         }
     }
 

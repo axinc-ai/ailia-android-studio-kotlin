@@ -20,6 +20,7 @@ import android.widget.EditText
 import android.widget.ImageView
 import android.widget.RadioGroup
 import android.widget.Spinner
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.widget.SwitchCompat
@@ -69,6 +70,7 @@ class VoiceAgentController(
     private val progress: TextView = activity.findViewById(R.id.voiceAgentProgress)
     private val input: TextView = activity.findViewById(R.id.voiceAgentInput)
     private val output: TextView = activity.findViewById(R.id.voiceAgentOutput)
+    private val transcriptScroll: ScrollView = activity.findViewById(R.id.voiceAgentTranscriptScroll)
     private val orb: VoiceAgentOrbView = activity.findViewById(R.id.voiceAgentOrb)
     private val temperature: TextView = activity.findViewById(R.id.voiceAgentTemperature)
     private val photo: ImageView = activity.findViewById(R.id.voiceAgentPhoto)
@@ -99,6 +101,9 @@ class VoiceAgentController(
     }
 
     init {
+        output.addOnLayoutChangeListener { _, _, _, _, bottom, _, _, _, oldBottom ->
+            if (bottom != oldBottom) scrollTranscriptToBottom()
+        }
         configure(cameraFacing, listOf(activity.getString(R.string.voice_agent_camera_back),
             activity.getString(R.string.voice_agent_camera_front)), 0)
         activity.onBackPressedDispatcher.addCallback(activity, back)
@@ -295,7 +300,11 @@ class VoiceAgentController(
                 if (!disposed) { input.text = text; input.contentDescription = "音声入力: $text" }
             }
             override fun onOutput(text: String) {
-                if (!disposed) { output.text = text; output.contentDescription = "音声出力: $text" }
+                if (!disposed) {
+                    output.text = text
+                    output.contentDescription = "音声出力: $text"
+                    scrollTranscriptToBottom()
+                }
             }
             override fun onIntermediateInput(text: String) = onInput(text)
             override fun onOutputPreview(text: String) = onOutput(text)
@@ -434,5 +443,13 @@ class VoiceAgentController(
     }
 
     fun close() { stop(); camera.close(); disposed = true }
+    private fun scrollTranscriptToBottom() {
+        transcriptScroll.post {
+            if (!disposed && sessionShown) {
+                val bottom = transcriptScroll.getChildAt(0)?.bottom ?: 0
+                transcriptScroll.scrollTo(0, (bottom - transcriptScroll.height + transcriptScroll.paddingBottom).coerceAtLeast(0))
+            }
+        }
+    }
     private fun showError(text: String) { error.text = text; error.visibility = View.VISIBLE }
 }
