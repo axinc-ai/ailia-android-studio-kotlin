@@ -4,39 +4,58 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.graphics.drawable.Drawable
 import android.media.AudioManager
+import android.util.Log
 import android.view.View
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
+import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.RadioGroup
 import android.widget.Spinner
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.widget.SwitchCompat
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
+import androidx.exifinterface.media.ExifInterface
 import com.google.android.material.button.MaterialButton
 import axip.ailia.Ailia
 import axip.ailia.AiliaModel
 import java.util.concurrent.ExecutorService
+import java.io.File
+import java.util.Locale
+import java.util.concurrent.CancellationException
 
 /** Owns the setup and minimal in-call UI; model work stays in AiliaVoiceAgentSample. */
 class VoiceAgentController(
     private val activity: AppCompatActivity,
     executor: ExecutorService,
     private val requestMicrophone: () -> Unit,
+    private val requestCamera: () -> Unit,
     private val showSession: (Boolean) -> Unit,
 ) {
     private data class Environment(val name: String, val id: Int, val qnn: Boolean = false)
     private val sample = AiliaVoiceAgentSample(activity, executor)
+    private val speechModels = listOf(SpeechModelType.WHISPER_LARGE_V3_TURBO, SpeechModelType.WHISPER_MEDIUM)
+    private val llmModels = LLMModelType.GEMMA_4_MODELS
+    private val speechModel: Spinner = activity.findViewById(R.id.voiceAgentSpeechModel)
+    private val llmModel: Spinner = activity.findViewById(R.id.voiceAgentLlmModel)
     private val speechBackend: Spinner = activity.findViewById(R.id.voiceAgentSpeechBackend)
     private val llmBackend: Spinner = activity.findViewById(R.id.voiceAgentLlmBackend)
     private val voiceBackend: Spinner = activity.findViewById(R.id.voiceAgentVoiceBackend)
+    private val cameraFacing: Spinner = activity.findViewById(R.id.voiceAgentCameraFacing)
+    private val cameraFacings = listOf(VoiceAgentCamera.Facing.BACK, VoiceAgentCamera.Facing.FRONT)
+    private var sessionCameraFacing = VoiceAgentCamera.Facing.BACK
     private val speechOutput: SwitchCompat = activity.findViewById(R.id.voiceAgentSpeechOutput)
     private val voiceModelLabel: TextView = activity.findViewById(R.id.voiceAgentVoiceModelLabel)
     private val inputMode: RadioGroup = activity.findViewById(R.id.voiceAgentInputMode)
@@ -51,9 +70,18 @@ class VoiceAgentController(
     private val input: TextView = activity.findViewById(R.id.voiceAgentInput)
     private val output: TextView = activity.findViewById(R.id.voiceAgentOutput)
     private val orb: VoiceAgentOrbView = activity.findViewById(R.id.voiceAgentOrb)
+    private val temperature: TextView = activity.findViewById(R.id.voiceAgentTemperature)
+    private val photo: ImageView = activity.findViewById(R.id.voiceAgentPhoto)
+    private val camera = VoiceAgentCamera(activity)
+    private var pendingPhoto: ((Result<File>) -> Unit)? = null
+    private var photoFile: File? = null
+    private var cpuSpeechEnvironments = emptyList<Environment>()
+    private lateinit var defaultSpeechEnvironment: Environment
     private var speechEnvironments = emptyList<Environment>()
     private var voiceEnvironments = emptyList<Environment>()
     private var llmBackends = emptyList<LLMBackend>()
+    private var preferredLlmBackend = LLMBackend.QNN
+    private var selectedLlmBackend = LLMBackend.CPU
     private var disposed = false
     private enum class PermissionAction { START, RESUME }
     private var permissionAction: PermissionAction? = null
@@ -71,6 +99,8 @@ class VoiceAgentController(
     }
 
     init {
+        configure(cameraFacing, listOf(activity.getString(R.string.voice_agent_camera_back),
+            activity.getString(R.string.voice_agent_camera_front)), 0)
         activity.onBackPressedDispatcher.addCallback(activity, back)
         start.setOnClickListener { start() }
         end.setOnClickListener { stop() }
@@ -96,18 +126,17 @@ class VoiceAgentController(
             val cpu = environments.filter { !QnnSupport.isQnnEnvironmentName(it.name) }
             check(cpu.isNotEmpty()) { "音声認識に使用できるバックエンドがありません" }
             val cpuIndex = preferredBlasThenCpuEnvironmentIndex(cpu.map { it.type })
-            speechEnvironments = cpu.map { Environment(it.name, it.id) } +
-                if (QnnSupport.speechQnnFileName(SpeechModelType.WHISPER_LARGE_V3_TURBO) != null)
-                    listOf(Environment("QNN (NPU) ${QnnSupport.socName}", cpu[cpuIndex].id, true)) else emptyList()
+            cpuSpeechEnvironments = cpu.map { Environment(it.name, it.id) }
+            defaultSpeechEnvironment = cpuSpeechEnvironments[cpuIndex]
             voiceEnvironments = environments.filter {
                 !QnnSupport.isQnnEnvironmentName(it.name) || QnnSupport.isFp16Supported()
             }.map { Environment(it.name, it.id) }
-            llmBackends = LLMBackend.values().filter {
-                it != LLMBackend.QNN || QnnSupport.isLLMQnnAvailable(LLMModelType.GEMMA_4_E2B)
-            }
-            configure(speechBackend, speechEnvironments.map { it.name },
-                speechEnvironments.indexOfFirst { it.qnn }.takeIf { it >= 0 } ?: cpuIndex)
-            configure(llmBackend, llmBackends.map { it.displayName }, llmBackends.indexOf(LLMBackend.QNN).coerceAtLeast(0))
+            configure(speechModel, speechModels.map { it.displayName }, 0)
+            configure(llmModel, llmModels.map { it.displayName }, 0)
+            updateSpeechBackends()
+            updateLlmBackends()
+            speechModel.onItemSelectedListener = selectionListener { updateSpeechBackends() }
+            llmModel.onItemSelectedListener = selectionListener { updateLlmBackends() }
             val voiceDefault = voiceEnvironments.indexOfFirst { it.id == cpu[cpuIndex].id }.coerceAtLeast(0)
             configure(voiceBackend, voiceEnvironments.map { it.name }, voiceDefault)
             updateVoiceControls()
@@ -122,6 +151,39 @@ class VoiceAgentController(
             setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         }
         spinner.setSelection(selection)
+    }
+
+    private fun selectionListener(action: () -> Unit) = object : AdapterView.OnItemSelectedListener {
+        override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) = action()
+        override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+    }
+
+    private fun updateSpeechBackends() {
+        val previous = speechEnvironments.getOrNull(speechBackend.selectedItemPosition)
+        val qnn = if (QnnSupport.speechQnnFileName(speechModels[speechModel.selectedItemPosition]) != null)
+            Environment("QNN (NPU) ${QnnSupport.socName}", defaultSpeechEnvironment.id, true) else null
+        speechEnvironments = cpuSpeechEnvironments + listOfNotNull(qnn)
+        val preferred = previous ?: qnn ?: defaultSpeechEnvironment
+        val selection = speechEnvironments.indexOf(preferred).takeIf { it >= 0 }
+            ?: speechEnvironments.indexOf(defaultSpeechEnvironment)
+        configure(speechBackend, speechEnvironments.map { it.name }, selection)
+    }
+
+    private fun updateLlmBackends() {
+        llmBackend.onItemSelectedListener = null
+        llmBackends = LLMBackend.values().filter {
+            it != LLMBackend.QNN || QnnSupport.isLLMQnnAvailable(llmModels[llmModel.selectedItemPosition])
+        }
+        // Preserve the preferred backend when a model temporarily requires CPU.
+        selectedLlmBackend = preferredLlmBackend.takeIf { it in llmBackends } ?: LLMBackend.CPU
+        configure(llmBackend, llmBackends.map { it.displayName }, llmBackends.indexOf(selectedLlmBackend))
+        llmBackend.onItemSelectedListener = selectionListener {
+            val backend = llmBackends[llmBackend.selectedItemPosition]
+            if (backend != selectedLlmBackend) {
+                selectedLlmBackend = backend
+                preferredLlmBackend = backend
+            }
+        }
     }
 
     private fun updateVoiceControls() {
@@ -152,10 +214,14 @@ class VoiceAgentController(
             return
         }
         val speech = speechEnvironments[speechBackend.selectedItemPosition]
+        sessionCameraFacing = cameraFacings[cameraFacing.selectedItemPosition]
         val config = AiliaVoiceAgentSample.Config(speech.id, speech.qnn,
             llmBackends[llmBackend.selectedItemPosition], voiceEnvironments[voiceBackend.selectedItemPosition].id,
-            inputMode = mode, testQueries = queries, speechOutputEnabled = speechOutput.isChecked)
+            inputMode = mode, testQueries = queries, speechOutputEnabled = speechOutput.isChecked,
+            speechModelType = speechModels[speechModel.selectedItemPosition],
+            llmModelType = llmModels[llmModel.selectedItemPosition])
         error.visibility = View.GONE
+        clearToolViews()
         input.text = ""
         output.text = ""
         end.contentDescription = activity.getString(R.string.voice_agent_end)
@@ -186,6 +252,7 @@ class VoiceAgentController(
             override fun onState(state: AiliaVoiceAgentSample.State) {
                 if (disposed) return
                 currentState = state
+                if (state == AiliaVoiceAgentSample.State.CANCELLING) cancelPhoto()
                 status.setText(when (state) {
                     AiliaVoiceAgentSample.State.PREPARING -> R.string.voice_agent_status_preparing
                     AiliaVoiceAgentSample.State.LISTENING,
@@ -242,7 +309,46 @@ class VoiceAgentController(
             override fun onDownload(fileName: String, downloaded: Long, total: Long) {
                 if (!disposed) progress.text = formatDownloadProgress(fileName, downloaded, total)
             }
+            override fun onAirConditionerTemperature(temperature: Double) {
+                if (!disposed) {
+                    val value = String.format(Locale.ROOT, "%.1f", temperature).removeSuffix(".0")
+                    this@VoiceAgentController.temperature.text = activity.getString(R.string.voice_agent_temperature, value)
+                    this@VoiceAgentController.temperature.visibility = View.VISIBLE
+                }
+            }
+            override fun onTakePhoto(onComplete: (Result<File>) -> Unit) {
+                pendingPhoto = onComplete
+                if (ContextCompat.checkSelfPermission(activity, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                    capturePhoto()
+                } else requestCamera()
+            }
+            override fun onPhoto(file: File) {
+                if (disposed || !sessionShown) { file.delete(); return }
+                try {
+                    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true; inSampleSize = 1 }
+                    BitmapFactory.decodeFile(file.absolutePath, options)
+                    while (maxOf(options.outWidth, options.outHeight) / options.inSampleSize > 512) options.inSampleSize *= 2
+                    options.inJustDecodeBounds = false
+                    val image = checkNotNull(BitmapFactory.decodeFile(file.absolutePath, options)) { "写真を読み込めませんでした" }
+                    val exif = ExifInterface(file.absolutePath)
+                    val matrix = Matrix().apply {
+                        postRotate(exif.rotationDegrees.toFloat())
+                        if (exif.isFlipped) postScale(-1f, 1f)
+                    }
+                    val upright = Bitmap.createBitmap(image, 0, 0, image.width, image.height, matrix, true)
+                    if (upright !== image) image.recycle()
+                    photo.setImageBitmap(upright)
+                    photo.visibility = View.VISIBLE
+                    photoFile?.delete()
+                    photoFile = file
+                } catch (error: Exception) {
+                    file.delete()
+                    Log.e("VoiceAgent", "Cannot display photo", error)
+                    Toast.makeText(activity, "撮影した写真を表示できませんでした", Toast.LENGTH_SHORT).show()
+                }
+            }
             override fun onStopped(error: String?) {
+                cancelPhoto()
                 restoreSetup()
                 if (disposed) return
                 start.isEnabled = true
@@ -250,6 +356,37 @@ class VoiceAgentController(
                 if (error != null) showError(error)
             }
         })
+    }
+
+    fun onCameraPermission(granted: Boolean) {
+        if (pendingPhoto == null) return
+        if (granted) capturePhoto()
+        else completePhoto(Result.failure(IllegalStateException("カメラの許可がないため撮影できませんでした")))
+    }
+
+    private fun capturePhoto() {
+        try { camera.takePhoto(sessionCameraFacing) { result -> completePhoto(result) } }
+        catch (error: Exception) { completePhoto(Result.failure(error)) }
+    }
+
+    private fun completePhoto(result: Result<File>) {
+        val callback = pendingPhoto
+        pendingPhoto = null
+        if (callback != null) callback(result) else result.getOrNull()?.delete()
+    }
+
+    private fun cancelPhoto() {
+        camera.cancel()
+        completePhoto(Result.failure(CancellationException("撮影を中止しました")))
+    }
+
+    private fun clearToolViews() {
+        temperature.visibility = View.GONE
+        temperature.text = ""
+        photo.visibility = View.GONE
+        photo.setImageDrawable(null)
+        photoFile?.delete()
+        photoFile = null
     }
 
     fun onMicrophonePermission(granted: Boolean) {
@@ -268,6 +405,7 @@ class VoiceAgentController(
 
     fun stop() {
         permissionAction = null
+        cancelPhoto()
         if (!sample.isActive) return
         sample.stop()
         restoreSetup()
@@ -276,6 +414,7 @@ class VoiceAgentController(
 
     @Suppress("DEPRECATION")
     private fun restoreSetup() {
+        clearToolViews()
         audioManager.abandonAudioFocus(focusListener)
         activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         back.isEnabled = false
@@ -292,6 +431,6 @@ class VoiceAgentController(
         }
     }
 
-    fun close() { stop(); disposed = true }
+    fun close() { stop(); camera.close(); disposed = true }
     private fun showError(text: String) { error.text = text; error.visibility = View.VISIBLE }
 }

@@ -6,7 +6,9 @@ import android.os.Looper
 import android.util.Log
 import java.io.File
 import java.util.concurrent.CancellationException
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -32,8 +34,13 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
         val inputMode: InputMode = InputMode.MICROPHONE,
         val testQueries: List<String> = emptyList(),
         val speechOutputEnabled: Boolean = true,
+        val speechModelType: SpeechModelType = SpeechModelType.WHISPER_LARGE_V3_TURBO,
+        val llmModelType: LLMModelType = LLMModelType.GEMMA_4_E2B,
     ) {
         init {
+            require(speechModelType == SpeechModelType.WHISPER_MEDIUM ||
+                speechModelType == SpeechModelType.WHISPER_LARGE_V3_TURBO) { "Whisper MediumまたはTurboを選択してください" }
+            require(llmModelType in LLMModelType.GEMMA_4_MODELS) { "Gemma 4を選択してください" }
             require(inputMode != InputMode.SYNTHESIZED_QUERIES ||
                 (testQueries.isNotEmpty() && testQueries.all { it.isNotBlank() })) {
                 "テストクエリを1行に1件ずつ入力してください"
@@ -47,6 +54,11 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
         fun onWaveform(samples: FloatArray)
         fun onDownload(fileName: String, downloaded: Long, total: Long)
         fun onStopped(error: String?)
+        fun onAirConditionerTemperature(temperature: Double) = Unit
+        fun onTakePhoto(onComplete: (Result<File>) -> Unit) {
+            onComplete(Result.failure(IllegalStateException("カメラが接続されていません")))
+        }
+        fun onPhoto(file: File) { file.delete() }
     }
 
     private val context = context.applicationContext
@@ -267,12 +279,53 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
         }
         emit(token) { listener?.onInput(input); listener?.onOutput("") }
         state(token, State.THINKING)
-        val response = models.generateResponse(input, { ensureActive(token) }) { text ->
+        val response = models.generateResponse(input, { ensureActive(token) },
+            onTemperature = { value -> emit(token) { listener?.onAirConditionerTemperature(value) } },
+            takePhoto = { takePhoto(token) },
+            onPhoto = { file ->
+                main.post {
+                    val currentListener = listener
+                    if (generation.get() == token && currentListener != null) currentListener.onPhoto(file)
+                    else file.delete()
+                }
+            }) { text ->
             emit(token) { listener?.onOutput(text) }
         }
         ensureActive(token)
         emit(token) { listener?.onOutput(response) }
         if (speechOutputEnabled) speakResponse(token, response)
+    }
+
+    /** Wait off the UI thread; cancellation never waits for permission or a camera callback. */
+    private fun takePhoto(token: Long): File {
+        ensureActive(token)
+        val results = ArrayBlockingQueue<Result<File>>(1)
+        val lock = Any()
+        var abandoned = false
+        emit(token) {
+            listener?.onTakePhoto { result ->
+                synchronized(lock) {
+                    if (abandoned) result.getOrNull()?.delete() else results.offer(result)
+                }
+            }
+        }
+        try {
+            while (true) {
+                ensureActive(token)
+                val result = results.poll(100, TimeUnit.MILLISECONDS) ?: continue
+                val file = result.getOrThrow()
+                try { ensureActive(token) } catch (cancelled: CancellationException) {
+                    file.delete()
+                    throw cancelled
+                }
+                return file
+            }
+        } finally {
+            synchronized(lock) {
+                abandoned = true
+                results.poll()?.getOrNull()?.delete()
+            }
+        }
     }
 
     private fun speakResponse(token: Long, response: String) {

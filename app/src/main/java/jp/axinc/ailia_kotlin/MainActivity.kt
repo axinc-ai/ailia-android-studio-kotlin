@@ -308,6 +308,7 @@ class MainActivity : AppCompatActivity() {
         private const val REQUEST_CODE_CAMERA_PERMISSION = 10
         private const val REQUEST_CODE_AUDIO_PERMISSION = 11
         private const val REQUEST_CODE_VOICE_AGENT_PERMISSION = 12
+        private const val REQUEST_CODE_VOICE_AGENT_CAMERA_PERMISSION = 13
 
         /** ALMの既定プロンプト。入力音声の内容を説明させる。 */
         private const val ALM_DEFAULT_PROMPT = "入力された音声の内容を説明してください"
@@ -1835,6 +1836,10 @@ class MainActivity : AppCompatActivity() {
                         requestMicrophone = {
                             ActivityCompat.requestPermissions(this,
                                 arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_CODE_VOICE_AGENT_PERMISSION)
+                        },
+                        requestCamera = {
+                            ActivityCompat.requestPermissions(this,
+                                arrayOf(Manifest.permission.CAMERA), REQUEST_CODE_VOICE_AGENT_CAMERA_PERMISSION)
                         },
                         showSession = { active ->
                             rootScrollView.visibility = if (active) View.GONE else View.VISIBLE
@@ -4951,6 +4956,7 @@ class MainActivity : AppCompatActivity() {
         val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
         when (requestCode) {
             REQUEST_CODE_VOICE_AGENT_PERMISSION -> voiceAgentController?.onMicrophonePermission(granted)
+            REQUEST_CODE_VOICE_AGENT_CAMERA_PERMISSION -> voiceAgentController?.onCameraPermission(granted)
             REQUEST_CODE_CAMERA_PERMISSION -> if (granted) {
                 modeRadioGroup.check(R.id.cameraRadioButton)
             } else {
