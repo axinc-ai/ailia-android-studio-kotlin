@@ -47,12 +47,16 @@ class VoiceAgentController(
 ) {
     private data class Environment(val name: String, val id: Int, val qnn: Boolean = false)
     private val sample = AiliaVoiceAgentSample(activity, executor)
-    private val speechModels = listOf(SpeechModelType.WHISPER_LARGE_V3_TURBO, SpeechModelType.WHISPER_MEDIUM)
+    private val speechModels = listOf(SpeechModelType.WHISPER_MEDIUM, SpeechModelType.WHISPER_LARGE_V3_TURBO)
     private val llmModels = LLMModelType.GEMMA_4_MODELS
     private val speechModel: Spinner = activity.findViewById(R.id.voiceAgentSpeechModel)
     private val llmModel: Spinner = activity.findViewById(R.id.voiceAgentLlmModel)
     private val speechBackend: Spinner = activity.findViewById(R.id.voiceAgentSpeechBackend)
     private val llmBackend: Spinner = activity.findViewById(R.id.voiceAgentLlmBackend)
+    private val mtp: SwitchCompat = activity.findViewById(R.id.voiceAgentMtp)
+    private val mtpNote: TextView = activity.findViewById(R.id.voiceAgentMtpNote)
+    private val mtpSelections = mutableMapOf(LLMModelType.GEMMA_4_E2B to true, LLMModelType.GEMMA_4_E4B to false)
+    private var updatingMtp = false
     private val voiceBackend: Spinner = activity.findViewById(R.id.voiceAgentVoiceBackend)
     private val cameraFacing: Spinner = activity.findViewById(R.id.voiceAgentCameraFacing)
     private val cameraFacings = listOf(VoiceAgentCamera.Facing.BACK, VoiceAgentCamera.Facing.FRONT)
@@ -138,6 +142,9 @@ class VoiceAgentController(
             }.map { Environment(it.name, it.id) }
             configure(speechModel, speechModels.map { it.displayName }, 0)
             configure(llmModel, llmModels.map { it.displayName }, 0)
+            mtp.setOnCheckedChangeListener { _, enabled ->
+                if (!updatingMtp) mtpSelections[llmModels[llmModel.selectedItemPosition]] = enabled
+            }
             updateSpeechBackends()
             updateLlmBackends()
             speechModel.onItemSelectedListener = selectionListener { updateSpeechBackends() }
@@ -187,8 +194,21 @@ class VoiceAgentController(
             if (backend != selectedLlmBackend) {
                 selectedLlmBackend = backend
                 preferredLlmBackend = backend
+                updateMtpControls()
             }
         }
+        updateMtpControls()
+    }
+
+    private fun updateMtpControls() {
+        val model = llmModels[llmModel.selectedItemPosition]
+        val supported = LLMMtp.assistantFileName(model, selectedLlmBackend) != null
+        updatingMtp = true
+        mtp.isEnabled = supported
+        mtp.isChecked = supported && mtpSelections.getValue(model)
+        mtp.alpha = if (supported) 1f else .4f
+        mtpNote.setText(if (supported) R.string.voice_agent_mtp_note else R.string.voice_agent_mtp_unavailable)
+        updatingMtp = false
     }
 
     private fun updateVoiceControls() {
@@ -224,7 +244,7 @@ class VoiceAgentController(
             llmBackends[llmBackend.selectedItemPosition], voiceEnvironments[voiceBackend.selectedItemPosition].id,
             inputMode = mode, testQueries = queries, speechOutputEnabled = speechOutput.isChecked,
             speechModelType = speechModels[speechModel.selectedItemPosition],
-            llmModelType = llmModels[llmModel.selectedItemPosition])
+            llmModelType = llmModels[llmModel.selectedItemPosition], mtpEnabled = mtp.isChecked)
         error.visibility = View.GONE
         clearToolViews()
         input.text = ""

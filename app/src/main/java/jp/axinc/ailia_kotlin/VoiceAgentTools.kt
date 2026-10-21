@@ -44,13 +44,13 @@ internal class VoiceAgentTools {
         val DEFINITIONS = """
             [{"type":"function","function":{
                 "name":"${AiliaToolUseSample.TOOL_NAME}",
-                "description":"エアコンの設定温度を変更します。",
+                "description":"Set the air conditioner temperature.",
                 "parameters":{"type":"object","properties":{
-                    "temperature":{"type":"number","description":"設定温度（摂氏）"}},
+                    "temperature":{"type":"number","description":"Target temperature in degrees Celsius."}},
                     "required":["temperature"]}
             }},{"type":"function","function":{
                 "name":"$TAKE_PHOTO",
-                "description":"設定画面で選択したカメラで写真を1枚撮影し、画面右上に表示します。撮影した画像は会話履歴に追加され、内容を確認できます。",
+                "description":"Take one photo using the device camera.",
                 "parameters":{"type":"object","properties":{}}
             }}]
         """.trimIndent()

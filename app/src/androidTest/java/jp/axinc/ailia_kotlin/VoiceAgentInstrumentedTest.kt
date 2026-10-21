@@ -101,7 +101,7 @@ class VoiceAgentInstrumentedTest {
         assumeTrue("Enable explicitly on a device with cached models", InstrumentationRegistry.getArguments().getString("voiceAgentNative") == "true")
         val context = instrumentation.targetContext
         System.loadLibrary("ailia")
-        val speechFile = QnnSupport.speechQnnFileName(SpeechModelType.WHISPER_LARGE_V3_TURBO)
+        val speechFile = QnnSupport.speechQnnFileName(SpeechModelType.WHISPER_MEDIUM)
         val llmFile = QnnSupport.llmQnnFileName(LLMModelType.GEMMA_4_E2B)
         assumeTrue(speechFile != null && llmFile != null)
         val directory = ModelDownloader.modelDirectory(context)
@@ -199,7 +199,7 @@ class VoiceAgentInstrumentedTest {
         assumeTrue("Enable explicitly on a device with cached models", InstrumentationRegistry.getArguments().getString("voiceAgentNative") == "true")
         val context = instrumentation.targetContext
         System.loadLibrary("ailia")
-        val speech = QnnSupport.speechQnnFileName(SpeechModelType.WHISPER_LARGE_V3_TURBO)
+        val speech = QnnSupport.speechQnnFileName(SpeechModelType.WHISPER_MEDIUM)
         val llm = QnnSupport.llmQnnFileName(LLMModelType.GEMMA_4_E2B)
         assumeTrue(speech != null && llm != null)
         val directory = ModelDownloader.modelDirectory(context)
@@ -292,7 +292,7 @@ class VoiceAgentInstrumentedTest {
         val context = instrumentation.targetContext
         System.loadLibrary("ailia")
         axip.ailia.Ailia.SetTemporaryCachePath(context.cacheDir.absolutePath)
-        val qnnSpeech = QnnSupport.speechQnnFileName(SpeechModelType.WHISPER_LARGE_V3_TURBO)
+        val qnnSpeech = QnnSupport.speechQnnFileName(SpeechModelType.WHISPER_MEDIUM)
         val qnnLlm = QnnSupport.llmQnnFileName(LLMModelType.GEMMA_4_E2B)
         assumeTrue(qnnSpeech != null && qnnLlm != null)
         val directory = ModelDownloader.modelDirectory(context)

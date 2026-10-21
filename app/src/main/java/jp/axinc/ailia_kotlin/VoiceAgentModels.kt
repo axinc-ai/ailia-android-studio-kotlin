@@ -72,7 +72,8 @@ internal class VoiceAgentModels(private val context: Context) {
         }
         checkActive()
 
-        mtpModelFile = LLMMtp.assistantFileName(modelType, config.llmBackend)?.let { name ->
+        val mtpName = if (config.mtpEnabled) LLMMtp.assistantFileName(modelType, config.llmBackend) else null
+        mtpModelFile = mtpName?.let { name ->
             checkNotNull(LLMMtp.download(context, name, config.llmBackend, llmProgress(name))) {
                 "MTP Assistantのダウンロードに失敗しました"
             }

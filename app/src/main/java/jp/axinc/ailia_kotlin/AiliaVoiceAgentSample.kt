@@ -35,8 +35,9 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
         val inputMode: InputMode = InputMode.MICROPHONE,
         val testQueries: List<String> = emptyList(),
         val speechOutputEnabled: Boolean = true,
-        val speechModelType: SpeechModelType = SpeechModelType.WHISPER_LARGE_V3_TURBO,
+        val speechModelType: SpeechModelType = SpeechModelType.WHISPER_MEDIUM,
         val llmModelType: LLMModelType = LLMModelType.GEMMA_4_E2B,
+        val mtpEnabled: Boolean = llmModelType == LLMModelType.GEMMA_4_E2B,
     ) {
         init {
             require(speechModelType == SpeechModelType.WHISPER_MEDIUM ||
