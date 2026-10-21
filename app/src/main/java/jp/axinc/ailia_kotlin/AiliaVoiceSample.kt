@@ -353,19 +353,32 @@ class AiliaVoiceSample(private val modelDirectory: File) {
     }
 
     fun textToSpeech(audio: FloatArray, channels: Int, sampleRate: Int, refText: String, refLang: String, text: String, textLang: String, autoPlay: Boolean = true) : Long {
-        Log.d(TAG, "Starting ailia Voice JNI sample ($modelType)")
         lastAudioData = null
+        if (!setReferenceAudio(audio, channels, sampleRate, refText, refLang)) return -1
+        return synthesizeText(text, textLang, autoPlay)
+    }
 
-        if (voice == null) {
-            return -1
-        }
-
-        try {
-            val refG2pText = voice?.g2p(refText, g2pTypeForLang(refLang))!!
+    /** Set once after initialization, then use synthesizeText repeatedly with the same reference. */
+    fun setReferenceAudio(audio: FloatArray, channels: Int, sampleRate: Int, refText: String, refLang: String): Boolean {
+        val engine = voice ?: return false
+        return try {
+            val refG2pText = engine.g2p(refText, g2pTypeForLang(refLang))
             Log.d(TAG, "Ref text: $refText")
             Log.d(TAG, "Ref Features: $refG2pText")
-            voice?.setReferenceAudio(audio, audio.size * 4, channels, sampleRate, refG2pText)
+            engine.setReferenceAudio(audio, audio.size * 4, channels, sampleRate, refG2pText)
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to set reference audio", e)
+            false
+        }
+    }
 
+    /** Synthesize using the reference already configured on this voice instance. */
+    fun synthesizeText(text: String, textLang: String, autoPlay: Boolean = true): Long {
+        Log.d(TAG, "Starting ailia Voice JNI sample ($modelType)")
+        lastAudioData = null
+        if (voice == null) return -1
+        try {
             val targetLanguage = if (isDistillModel(modelType)) "ja" else textLang
             val g2pText = voice?.g2p(text, g2pTypeForLang(targetLanguage))!!
             Log.d(TAG, "Text: $text")

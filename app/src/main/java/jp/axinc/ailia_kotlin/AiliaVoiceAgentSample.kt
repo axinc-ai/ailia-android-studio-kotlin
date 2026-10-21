@@ -15,10 +15,11 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * Orchestrates microphone turns and UI callbacks for Whisper → Gemma → GPT-SoVITS.
  * VoiceAgentModels owns inference/history; VoiceAgentPlayer owns PCM output.
- * All native model creation, inference and destruction run on the supplied model executor.
+ * Speech/LLM creation, inference and destruction run on the supplied model executor.
  * The executor must be the same one used for the application's other LLMs (QNN thread affinity).
+ * Response synthesis owns a private voice model on a separate worker, joined before the next turn.
  * Microphone capture is stopped during recognition, generation and playback to avoid feedback.
- * Only one model is resident at a time so the sample can run on memory-constrained phones.
+ * Whisper is released before generation; Gemma and response synthesis can run concurrently.
  */
 class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorService) {
     enum class State {
@@ -285,21 +286,52 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
         }
         emit(token) { listener?.onInput(input); listener?.onOutput("") }
         state(token, State.THINKING)
-        val response = models.generateResponse(input, { ensureActive(token) },
-            onTemperature = { value -> emit(token) { listener?.onAirConditionerTemperature(value) } },
-            takePhoto = { takePhoto(token) },
-            onPhoto = { file ->
-                main.post {
-                    val currentListener = listener
-                    if (generation.get() == token && currentListener != null) currentListener.onPhoto(file)
-                    else file.delete()
+        var firstPlayback = true
+        val speech = if (speechOutputEnabled) VoiceAgentStreamingSpeech<AudioUtil.WavFileData>(
+            checkActive = { ensureActive(token) },
+            withSynthesis = { action ->
+                models.withVoice({ ensureActive(token) }) { synthesize ->
+                    action { segment ->
+                        Log.d("VoiceAgent", "Synthesizing streamed segment: $segment")
+                        synthesize(segment)
+                    }
                 }
-            }) { text ->
-            emit(token) { listener?.onOutputPreview(text) }
+            },
+            play = { audio, checkActive ->
+                if (firstPlayback) {
+                    state(token, State.SPEAKING)
+                    firstPlayback = false
+                }
+                Log.d("VoiceAgent", "Playing streamed segment")
+                play(token, audio, checkActive)
+            }) else null
+        try {
+            val response = models.generateResponse(input, {
+                ensureActive(token)
+                speech?.checkRunning()
+            },
+                onTemperature = { value -> emit(token) { listener?.onAirConditionerTemperature(value) } },
+                takePhoto = { takePhoto(token) },
+                onPhoto = { file ->
+                    main.post {
+                        val currentListener = listener
+                        if (generation.get() == token && currentListener != null) currentListener.onPhoto(file)
+                        else file.delete()
+                    }
+                },
+                onSpeechText = { text, complete -> speech?.update(text, complete) }) { text ->
+                emit(token) { listener?.onOutputPreview(text) }
+            }
+            ensureActive(token)
+            emit(token) { listener?.onOutput(response) }
+            if (speech != null) {
+                Log.d("VoiceAgent", "Generation complete; draining streamed speech")
+                state(token, State.SYNTHESIZING)
+                speech.finish()
+            }
+        } finally {
+            speech?.close()
         }
-        ensureActive(token)
-        emit(token) { listener?.onOutput(response) }
-        if (speechOutputEnabled) speakResponse(token, response)
     }
 
     private fun startListening(token: Long) {
@@ -337,28 +369,6 @@ class AiliaVoiceAgentSample(context: Context, private val executor: ExecutorServ
                 abandoned = true
                 results.poll()?.getOrNull()?.delete()
             }
-        }
-    }
-
-    private fun speakResponse(token: Long, response: String) {
-        state(token, State.SYNTHESIZING)
-        val segments = voiceAgentSpeechSegments(response)
-        check(segments.isNotEmpty()) { "読み上げる応答がありません" }
-        models.withVoice({ ensureActive(token) }) { synthesize ->
-            var firstPlayback = true
-            var synthesized = 0
-            var played = 0
-            voiceAgentQueueSpeech(segments, { ensureActive(token) }, { segment ->
-                Log.d("VoiceAgent", "Synthesizing segment ${++synthesized}/${segments.size}: $segment")
-                synthesize(segment)
-            }, { result, checkActive ->
-                if (firstPlayback) {
-                    state(token, State.SPEAKING)
-                    firstPlayback = false
-                }
-                Log.d("VoiceAgent", "Playing segment ${++played}/${segments.size}")
-                play(token, result, checkActive)
-            })
         }
     }
 

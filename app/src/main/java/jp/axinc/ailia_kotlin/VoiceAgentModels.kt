@@ -16,11 +16,11 @@ import java.util.concurrent.CancellationException
 
 /**
  * Owns downloads, inference and conversation history. Call only on the session's model executor:
- * QNN model creation and destruction must stay on that thread. Only one model is resident at once.
+ * QNN model creation and destruction must stay on that thread. Response synthesis uses a separate,
+ * worker-local voice instance so it can overlap generation without sharing a native model.
  */
 internal class VoiceAgentModels(private val context: Context) {
     private val speech = AiliaSpeechSample(ModelDownloader.modelDirectory(context))
-    private val voice = AiliaVoiceSample(ModelDownloader.modelDirectory(context))
     private var llm: AiliaLLM? = null
     private var speechTurn: VoiceAgentSpeechTurn? = null
     private lateinit var config: AiliaVoiceAgentSample.Config
@@ -79,8 +79,8 @@ internal class VoiceAgentModels(private val context: Context) {
         }
         checkActive()
 
-        voice.modelType = VoiceModelType.GPT_SOVITS_V2_PRO_DISTILL_BASE
         if (config.speechOutputEnabled || config.inputMode == AiliaVoiceAgentSample.InputMode.SYNTHESIZED_QUERIES) {
+            val voice = createVoice()
             check(voice.downloadModel(progress)) { "GPT-SoVITSモデルのダウンロードに失敗しました" }
         }
         checkActive()
@@ -133,7 +133,9 @@ internal class VoiceAgentModels(private val context: Context) {
     }
 
     fun generateResponse(input: String, checkActive: () -> Unit, onTemperature: (Double) -> Unit,
-                         takePhoto: () -> File, onPhoto: (File) -> Unit, onOutput: (String) -> Unit): String {
+                         takePhoto: () -> File, onPhoto: (File) -> Unit,
+                         onSpeechText: (text: String, complete: Boolean) -> Unit = { _, _ -> },
+                         onOutput: (String) -> Unit): String {
         val model = AiliaLLM()
         llm = model
         var currentTurn: MutableList<JSONObject>? = null
@@ -188,6 +190,7 @@ internal class VoiceAgentModels(private val context: Context) {
                         checkActive()
                         partialReply = text
                         onOutput(text)
+                        onSpeechText(text, false)
                     }
                 }
                 checkActive()
@@ -196,6 +199,7 @@ internal class VoiceAgentModels(private val context: Context) {
                 Log.d("VoiceAgent", "Response JSON: $response")
                 turn += response
                 partialReply = ""
+                onSpeechText(response.optString("content").trim(), true)
                 val calls = response.optJSONArray("tool_calls")
                 if (calls == null || calls.length() == 0) {
                     val text = response.optString("content").trim()
@@ -323,24 +327,31 @@ internal class VoiceAgentModels(private val context: Context) {
     fun synthesize(text: String, checkActive: () -> Unit): AudioUtil.WavFileData =
         withVoice(checkActive) { synthesize -> synthesize(text) }
 
-    /** Reuse one voice model/reference throughout a response; never overlap native model calls. */
+    private fun createVoice() = AiliaVoiceSample(ModelDownloader.modelDirectory(context)).apply {
+        modelType = VoiceModelType.GPT_SOVITS_V2_PRO_DISTILL_BASE
+    }
+
+    /** Create, use and release a private voice instance on the calling synthesis worker. */
     fun <T> withVoice(checkActive: () -> Unit, action: (synthesize: (String) -> AudioUtil.WavFileData) -> T): T {
         checkActive()
+        val voice = createVoice()
         val reference = AudioUtil().loadRawAudio(context.resources.openRawResource(R.raw.reference_audio_girl))
         try {
             check(voice.initializeVoice(config.voiceEnvId)) { "GPT-SoVITSの初期化に失敗しました" }
             checkActive()
-            return action { text -> synthesizeInitialized(text, reference, checkActive) }
+            check(voice.setReferenceAudio(reference.audioData, reference.channels, reference.sampleRate,
+                "水をマレーシアから買わなくてはならない。", "ja")) { "参照音声の設定に失敗しました" }
+            checkActive()
+            return action { text -> synthesizeInitialized(voice, text, checkActive) }
         } finally {
             voice.releaseVoice()
         }
     }
 
-    private fun synthesizeInitialized(text: String, reference: AudioUtil.WavFileData,
+    private fun synthesizeInitialized(voice: AiliaVoiceSample, text: String,
                                       checkActive: () -> Unit): AudioUtil.WavFileData {
         checkActive()
-        check(voice.textToSpeech(reference.audioData, reference.channels, reference.sampleRate,
-            "水をマレーシアから買わなくてはならない。", "ja", text, "ja", autoPlay = false) >= 0) {
+        check(voice.synthesizeText(text, "ja", autoPlay = false) >= 0) {
             "音声合成に失敗しました"
         }
         checkActive()
@@ -350,7 +361,6 @@ internal class VoiceAgentModels(private val context: Context) {
     fun release(clearHistory: Boolean = true) {
         speechTurn = null
         speech.releaseSpeech()
-        voice.releaseVoice()
         runCatching { llm?.destroy() }.onFailure { Log.w("VoiceAgent", "Failed to release LLM", it) }
         llm = null
         if (clearHistory) history.clear()
