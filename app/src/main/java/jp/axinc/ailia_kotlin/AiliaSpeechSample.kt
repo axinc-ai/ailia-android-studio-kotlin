@@ -125,6 +125,37 @@ class AiliaSpeechSample(private val modelDirectory: File) {
     var currentModelType: SpeechModelType = DEFAULT_MODEL_TYPE
     var diarizationEnabled: Boolean = false
 
+    /** One drain task per session; audio captured during recognition becomes the next batch. */
+    private class MicAudioBuffer {
+        private val chunks = ArrayDeque<FloatArray>()
+        private var draining = false
+
+        @Synchronized
+        fun add(chunk: FloatArray): Boolean {
+            chunks.addLast(chunk)
+            if (draining) return false
+            draining = true
+            return true
+        }
+
+        @Synchronized
+        fun take(): FloatArray? {
+            if (chunks.isEmpty()) {
+                draining = false
+                return null
+            }
+            if (chunks.size == 1) return chunks.removeFirst()
+            val batch = FloatArray(chunks.sumOf { it.size })
+            var offset = 0
+            while (chunks.isNotEmpty()) {
+                val chunk = chunks.removeFirst()
+                chunk.copyInto(batch, offset)
+                offset += chunk.size
+            }
+            return batch
+        }
+    }
+
     /**
      * trueの場合、SoC固有の変換済みQNNモデル(.qnn)をNPUで実行する。
      * .qnnはencoder/decoderの両方を含むため、openModelに渡すだけでQNNで動作する。
@@ -400,7 +431,7 @@ class AiliaSpeechSample(private val modelDirectory: File) {
 
     /**
      * 16kHz/monoでマイク録音を開始する。API 23以降はPCM_FLOAT、旧端末はPCM16を使用する。
-     * Flutter版と同様に短いチャンクを逐次投入し、SDKが処理可能になった時だけ認識する。
+     * 録音は100ms単位で続け、認識中に溜まった未処理音声はまとめてSDKへ投入する。
      */
     @SuppressLint("MissingPermission")
     fun startMicRecording(listener: MicRecordingListener): Boolean {
@@ -436,7 +467,6 @@ class AiliaSpeechSample(private val modelDirectory: File) {
 
         val sampleRate = 16000
         val readChunkSize = sampleRate / 10
-        val recognitionChunkSize = readChunkSize
         val useFloatInput = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
         val encoding = if (useFloatInput) AudioFormat.ENCODING_PCM_FLOAT else AudioFormat.ENCODING_PCM_16BIT
         val bytesPerSample = if (useFloatInput) Float.SIZE_BYTES else Short.SIZE_BYTES
@@ -472,7 +502,6 @@ class AiliaSpeechSample(private val modelDirectory: File) {
                     listener,
                     sampleRate,
                     readChunkSize,
-                    recognitionChunkSize,
                     useFloatInput,
                 )
             }
@@ -501,13 +530,11 @@ class AiliaSpeechSample(private val modelDirectory: File) {
         listener: MicRecordingListener,
         sampleRate: Int,
         readChunkSize: Int,
-        recognitionChunkSize: Int,
         useFloatInput: Boolean,
     ) {
         val readBuffer = FloatArray(readChunkSize)
         val shortReadBuffer = if (useFloatInput) null else ShortArray(readChunkSize)
-        val recognitionBuffer = FloatArray(recognitionChunkSize)
-        var recognitionFill = 0
+        val pendingAudio = MicAudioBuffer()
 
         try {
             while (micRecording.get()) {
@@ -532,27 +559,7 @@ class AiliaSpeechSample(private val modelDirectory: File) {
 
                 listener.onWaveform(readBuffer.copyOf(readResult), sampleRate)
 
-                var sourceOffset = 0
-                while (sourceOffset < readResult) {
-                    val copySize = minOf(
-                        readResult - sourceOffset,
-                        recognitionChunkSize - recognitionFill
-                    )
-                    System.arraycopy(
-                        readBuffer,
-                        sourceOffset,
-                        recognitionBuffer,
-                        recognitionFill,
-                        copySize
-                    )
-                    sourceOffset += copySize
-                    recognitionFill += copySize
-
-                    if (recognitionFill == recognitionChunkSize) {
-                        submitMicChunk(recognitionBuffer.copyOf(), listener, sampleRate)
-                        recognitionFill = 0
-                    }
-                }
+                submitMicChunk(readBuffer.copyOf(readResult), pendingAudio, listener, sampleRate)
             }
         } catch (e: Exception) {
             if (micRecording.get()) {
@@ -566,11 +573,7 @@ class AiliaSpeechSample(private val modelDirectory: File) {
             micReadExecutor = null
 
             if (finalizeMicInput.get()) {
-                submitMicFinalization(
-                    recognitionBuffer.copyOf(recognitionFill),
-                    listener,
-                    sampleRate
-                )
+                submitMicFinalization(listener)
             } else {
                 micRecognitionExecutor?.shutdownNow()
                 micRecognitionExecutor = null
@@ -581,31 +584,34 @@ class AiliaSpeechSample(private val modelDirectory: File) {
 
     private fun submitMicChunk(
         chunk: FloatArray,
+        pendingAudio: MicAudioBuffer,
         listener: MicRecordingListener,
         sampleRate: Int
     ) {
-        micRecognitionExecutor?.execute {
-            if (!isInitialized) return@execute
-            try {
-                val startTime = System.nanoTime()
-                val lines = pushLiveAudio(chunk, 1, sampleRate)
-                val processingTimeMs = micProcessingTimeNanos.addAndGet(
-                    System.nanoTime() - startTime
-                ) / 1_000_000
-                if (lines.isNotEmpty()) {
-                    listener.onResult(lines, false, processingTimeMs)
+        val executor = micRecognitionExecutor ?: return
+        if (!pendingAudio.add(chunk)) return
+        executor.execute {
+            while (isInitialized && finalizeMicInput.get()) {
+                val batch = pendingAudio.take() ?: break
+                try {
+                    val startTime = System.nanoTime()
+                    val lines = pushLiveAudio(batch, 1, sampleRate)
+                    val processingTimeMs = micProcessingTimeNanos.addAndGet(
+                        System.nanoTime() - startTime
+                    ) / 1_000_000
+                    if (lines.isNotEmpty()) {
+                        listener.onResult(lines, false, processingTimeMs)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "pushLiveAudio failed", e)
+                    listener.onError(e.message ?: "Live speech recognition failed")
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "pushLiveAudio failed", e)
-                listener.onError(e.message ?: "Live speech recognition failed")
             }
         }
     }
 
     private fun submitMicFinalization(
-        tail: FloatArray,
         listener: MicRecordingListener,
-        sampleRate: Int
     ) {
         val executor = micRecognitionExecutor
         if (executor == null) {
@@ -614,16 +620,6 @@ class AiliaSpeechSample(private val modelDirectory: File) {
         }
         executor.execute {
             try {
-                if (isInitialized && tail.isNotEmpty()) {
-                    val startTime = System.nanoTime()
-                    val lines = pushLiveAudio(tail, 1, sampleRate)
-                    val processingTimeMs = micProcessingTimeNanos.addAndGet(
-                        System.nanoTime() - startTime
-                    ) / 1_000_000
-                    if (lines.isNotEmpty()) {
-                        listener.onResult(lines, false, processingTimeMs)
-                    }
-                }
                 val finalLines = if (isInitialized) {
                     val startTime = System.nanoTime()
                     val lines = finalizeLiveAudio()
@@ -652,7 +648,7 @@ class AiliaSpeechSample(private val modelDirectory: File) {
         executor.shutdown()
     }
 
-    /** 録音を停止する。通常停止時は1秒未満の末尾も投入して認識を確定する。 */
+    /** 録音を停止する。通常停止時は未処理音声をすべて投入してから認識を確定する。 */
     fun stopMicRecording(finalize: Boolean = true) {
         if (!micSessionActive.get()) return
         finalizeMicInput.set(finalize)
