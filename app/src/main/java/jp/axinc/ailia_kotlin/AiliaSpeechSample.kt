@@ -248,13 +248,10 @@ class AiliaSpeechSample(private val modelDirectory: File) {
                 else -> ""
             }
 
-            // When diarization is enabled, disable LIVE flag (diarization requires non-live mode)
-            // Streaming still works without the LIVE flag
-            val useLiveFlag = liveMode && !diarizationEnabled
-            val flags = if (useLiveFlag) AiliaSpeech.AILIA_SPEECH_FLAG_LIVE else AiliaSpeech.AILIA_SPEECH_FLAG_NONE
-            liveModeEnabled = useLiveFlag
+            val flags = if (liveMode) AiliaSpeech.AILIA_SPEECH_FLAG_LIVE else AiliaSpeech.AILIA_SPEECH_FLAG_NONE
+            liveModeEnabled = liveMode
 
-            Log.i(TAG, "Initializing speech with envId=$envId, model=${currentModelType.displayName}, qnn=${qnnFileName != null}, liveMode=$liveMode, diarization=$diarizationEnabled, useLiveFlag=$useLiveFlag")
+            Log.i(TAG, "Initializing speech with envId=$envId, model=${currentModelType.displayName}, qnn=${qnnFileName != null}, liveMode=$liveMode, diarization=$diarizationEnabled")
             Log.i(TAG, "Encoder: $encoderPath")
             Log.i(TAG, "Decoder: $decoderPath")
 

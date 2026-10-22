@@ -231,7 +231,6 @@ class MainActivity : AppCompatActivity() {
 
     /** ALMで推論に使う音声ファイル。Wav選択時はサンプル、Mic選択時は録音結果。 */
     private var almAudioPath: String? = null
-    private var isUpdatingSpeechOptionChecks = false
 
     private data class SpeakerReference(
         val name: String,
@@ -2384,7 +2383,7 @@ class MainActivity : AppCompatActivity() {
         speechModeRadioGroup.isEnabled = enabled
         speechLanguageSpinner.isEnabled = enabled
         diarizationCheckBox.isEnabled = enabled
-        liveModeCheckBox.isEnabled = enabled && !diarizationCheckBox.isChecked
+        liveModeCheckBox.isEnabled = enabled
         visionRunButton.isEnabled = enabled
         speakerProfileSpinner.isEnabled = enabled
         speakerInputModeRadioGroup.isEnabled = enabled
@@ -3337,32 +3336,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupDiarizationCheckBox() {
         speechSample.diarizationEnabled = diarizationCheckBox.isChecked
-        updateLiveModeAvailability(diarizationCheckBox.isChecked)
         diarizationCheckBox.setOnCheckedChangeListener { _, isChecked ->
             speechSample.diarizationEnabled = isChecked
-            updateLiveModeAvailability(isChecked)
             resetSpeechForOptionChange()
         }
     }
 
     private fun setupLiveModeCheckBox() {
         liveModeCheckBox.setOnCheckedChangeListener { _, _ ->
-            if (!isUpdatingSpeechOptionChecks) {
-                resetSpeechForOptionChange()
-            }
-        }
-    }
-
-    /** Speaker Diarizationと併用できないLive ModeをOFFにして選択不可にする。 */
-    private fun updateLiveModeAvailability(diarizationEnabled: Boolean) {
-        isUpdatingSpeechOptionChecks = true
-        try {
-            if (diarizationEnabled) {
-                liveModeCheckBox.isChecked = false
-            }
-            liveModeCheckBox.isEnabled = !diarizationEnabled
-        } finally {
-            isUpdatingSpeechOptionChecks = false
+            resetSpeechForOptionChange()
         }
     }
 
