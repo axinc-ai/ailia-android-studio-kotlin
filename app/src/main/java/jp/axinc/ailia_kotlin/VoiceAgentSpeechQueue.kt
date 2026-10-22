@@ -71,7 +71,7 @@ internal class VoiceAgentSpeechText {
 
 /**
  * The LLM only queues text. A dedicated worker owns synthesis and a second worker owns playback.
- * Text is bounded by the generation limit; only two completed PCM clips can wait for playback.
+ * Only text queues while generation/continuation runs; only two completed PCM clips can wait.
  * Playback is held until finish(), so generation keeps its UI state and failures speak nothing.
  */
 internal class VoiceAgentStreamingSpeech<T : Any>(

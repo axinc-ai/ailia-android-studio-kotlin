@@ -152,62 +152,122 @@ internal class VoiceAgentModels(private val context: Context) {
             checkActive()
             // Keep whole user turns: assistant tool calls and their results must stay together.
             while (history.size >= 4) removeOldestTurn()
-            val turn = mutableListOf(JSONObject().put("role", "user").put("content", input))
+            val request = JSONObject().put("role", "user").put("content", input)
+            val turn = mutableListOf(request)
             history += turn
             currentTurn = turn
             val contextSize = model.getContextSize()
             val definitions = tools.definitions()
-            val fixedTokens = model.getTokenCount(definitions) + model.getTokenCount(SYSTEM_PROMPT) + 64
+            val fixedTokens = model.getTokenCount(definitions) + model.getTokenCount(SYSTEM_PROMPT + CONTINUATION_INSTRUCTION) + 64
             model.setSamplingParams(40, 0.9f, 0.0f, 1234)
             model.setTools(definitions)
             model.setThinking(false)
-            repeat(8) {
-                checkActive()
-                while (fixedTokens + history.flatten().sumOf { messageTokens(model, it) } > contextSize - 768) {
-                    if (!removeOldestTurn()) break
+            val continuedReply = StringBuilder()
+            var toolRounds = 0
+            var emptyContinuations = 0
+            var compactedForPrompt = false
+            var hasGeneratedReply = false
+            fun compactHistory() {
+                val before = history.flatten().sumOf { messageTokens(model, it) }
+                request.put("content", input)
+                val available = (contextSize - fixedTokens - 128).coerceAtLeast(192)
+                val budget = (before / 8).coerceAtLeast(192).coerceAtMost(available)
+                voiceAgentCompactHistory(history, turn, budget,
+                    maximumBudget = if (emptyContinuations < 2) available else budget,
+                    request = request.takeIf { hasGeneratedReply }) { messageTokens(model, it) }
+                Log.i("VoiceAgent", "Context compacted: $before -> ${turn.sumOf { messageTokens(model, it) }} history tokens")
+            }
+            fun continueResponse() {
+                if (partialReply.isNotBlank()) {
+                    hasGeneratedReply = true
+                    turn += JSONObject().put("role", "assistant").put("content", partialReply)
+                    continuedReply.append(partialReply)
+                    partialReply = ""
+                    emptyContinuations = 0
+                } else {
+                    emptyContinuations++
                 }
-                model.setPromptJson(JSONArray().put(JSONObject().put("role", "system").put("content", SYSTEM_PROMPT)).apply {
-                    history.flatten().forEach { put(it) }
-                }.toString())
-                Log.d("VoiceAgent", "Tool prompt tokens: ${model.getPromptTokenCount()}")
-                val generationLimit = minOf(512, contextSize - model.getPromptTokenCount() - 1)
-                check(generationLimit > 0) { "音声入力が長すぎます。対話を開始し直してください" }
+                compactHistory()
+                compactedForPrompt = true
+                if (continuedReply.isNotEmpty() && turn.lastOrNull()?.optString("content") != CONTINUE_PROMPT) {
+                    turn += JSONObject().put("role", "user").put("content", CONTINUE_PROMPT)
+                }
+                // Supported models have ample room for tools plus a short history. Repeated
+                // CONTEXT_FULL without producing text indicates an unusable model/context setup.
+                check(emptyContinuations <= 3) { "短縮した履歴でもモデルのコンテキストに収まりません" }
+                Log.i("VoiceAgent", "Continuing response after context boundary")
+            }
+            while (true) {
+                checkActive()
+                if (!compactedForPrompt && fixedTokens + history.flatten().sumOf { messageTokens(model, it) } > contextSize - 256) compactHistory()
+                compactedForPrompt = false
                 var complete = false
-                val preview = VoiceAgentTextStream()
-                val generated = StringBuilder()
-                var generatedTokens = 0
-                val batchLimit = if (mtpModelFile != null) LLMMtp.N_DRAFT + 1 else 1
-                for (step in 0 until generationLimit) {
-                    // One MTP step can commit multiple tokens. Reserve a complete batch.
-                    if (generatedTokens + batchLimit > generationLimit) break
-                    checkActive()
-                    complete = model.generate()
-                    if (complete) break
-                    val delta = model.getDeltaText()
-                    generated.append(delta)
-                    generatedTokens = model.getTokenCount(generated.toString())
-                    val text = preview.append(delta)
-                    if (text != partialReply) {
-                        checkActive()
-                        partialReply = text
-                        onOutput(text)
-                        onSpeechText(text, false)
+                try {
+                    val prompt = SYSTEM_PROMPT + if (continuedReply.isNotEmpty()) CONTINUATION_INSTRUCTION else ""
+                    model.setPromptJson(JSONArray().put(JSONObject().put("role", "system").put("content", prompt)).apply {
+                        history.flatten().forEach { put(it) }
+                    }.toString())
+                    val promptTokens = model.getPromptTokenCount()
+                    Log.d("VoiceAgent", "Tool prompt tokens: $promptTokens")
+                    // Stop before the native window is exhausted, reserving a full MTP batch
+                    // and template/EOS space. The former 512-token error is no longer an end point.
+                    val generationLimit = (contextSize - promptTokens - 16).coerceAtLeast(0)
+                    val preview = VoiceAgentTextStream(trimLeadingWhitespace = continuedReply.isEmpty())
+                    val generated = StringBuilder()
+                    var generatedTokens = 0
+                    val batchLimit = if (mtpModelFile != null) LLMMtp.N_DRAFT + 1 else 1
+                    if (generationLimit >= 64) {
+                        for (step in 0 until generationLimit) {
+                            if (generatedTokens + batchLimit > generationLimit) break
+                            checkActive()
+                            complete = model.generate()
+                            if (complete) break
+                            val delta = model.getDeltaText()
+                            generated.append(delta)
+                            generatedTokens = model.getTokenCount(generated.toString())
+                            val text = preview.append(delta)
+                            if (text != partialReply) {
+                                checkActive()
+                                partialReply = text
+                                val visible = continuedReply.toString() + text
+                                onOutput(visible)
+                                onSpeechText(visible, false)
+                            }
+                            // Prefer a complete sentence/line when nearing the window boundary.
+                            // Unexpected native CONTEXT_FULL still recovers from any partial text.
+                            if (generatedTokens >= generationLimit - maxOf(32, generationLimit / 8) &&
+                                RESPONSE_BOUNDARY.containsMatchIn(partialReply)) break
+                        }
                     }
+                } catch (error: RuntimeException) {
+                    checkActive()
+                    if (!voiceAgentIsContextFull(error)) throw error
+                    Log.i("VoiceAgent", "Native context full; retaining generated text", error)
                 }
                 checkActive()
-                check(complete) { "応答の生成が上限に達しました。対話を開始し直してください" }
+                if (!complete) {
+                    continueResponse()
+                    continue
+                }
                 val response = JSONObject(model.getResponseJson())
                 Log.d("VoiceAgent", "Response JSON: $response")
                 turn += response
+                hasGeneratedReply = true
                 partialReply = ""
-                onSpeechText(response.optString("content").trim(), true)
+                val text = response.optString("content").trimEnd().let {
+                    if (continuedReply.isEmpty()) it.trimStart() else it
+                }
+                val visible = continuedReply.toString() + text
+                onSpeechText(visible, true)
                 val calls = response.optJSONArray("tool_calls")
                 if (calls == null || calls.length() == 0) {
-                    val text = response.optString("content").trim()
-                    check(text.isNotEmpty()) { "応答が空でした。対話を開始し直してください" }
-                    onOutput(text)
-                    return text
+                    check(visible.isNotBlank()) { "応答が空でした。対話を開始し直してください" }
+                    onOutput(visible)
+                    return visible
                 }
+                check(++toolRounds <= 8) { "ツールの呼び出しが上限に達しました。もう一度短く話しかけてください" }
+                continuedReply.setLength(0)
+                emptyContinuations = 0
                 // A tool round may contain introductory prose; the next round starts a new preview.
                 onOutput("")
                 for (index in 0 until calls.length()) {
@@ -235,7 +295,6 @@ internal class VoiceAgentModels(private val context: Context) {
                 }
                 appendPhotos(turn, photos)
             }
-            error("ツールの呼び出しが上限に達しました。もう一度短く話しかけてください")
         } catch (cancelled: CancellationException) {
             currentTurn?.let { turn ->
                 completeInterruptedTools(turn)
@@ -322,6 +381,9 @@ internal class VoiceAgentModels(private val context: Context) {
     }
 
     companion object {
+        private val RESPONSE_BOUNDARY = Regex("[。！？!?\\n\\r][」』）)\\]】〉》”’\\\"'\\s]*$")
+        private const val CONTINUE_PROMPT = "続けてください"
+        private const val CONTINUATION_INSTRUCTION = " Continue exactly from the last assistant message. Complete its unfinished final sentence or line before moving on. Do not repeat, summarize, or restart the answer."
         private const val SYSTEM_PROMPT = "You are a helpful assistant. Use tools to perform requested actions. Reply briefly in Japanese after receiving tool results."
     }
 

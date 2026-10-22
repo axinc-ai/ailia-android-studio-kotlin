@@ -1,7 +1,7 @@
 package jp.axinc.ailia_kotlin
 
 /** Preview only. Structured SDK responses remain authoritative for history and tool execution. */
-internal class VoiceAgentTextStream {
+internal class VoiceAgentTextStream(private val trimLeadingWhitespace: Boolean = true) {
     private val raw = StringBuilder()
 
     fun append(delta: String): String {
@@ -12,9 +12,10 @@ internal class VoiceAgentTextStream {
         val visible = text.substring(0, end)
         val opening = visible.lastIndexOf('<')
         // Markers may span multiple deltas. Hold their prefix so no internal syntax flashes onscreen.
-        return if (opening >= 0 && CONTROL_MARKERS.any { it.startsWith(visible.substring(opening)) }) {
-            visible.substring(0, opening).trimStart()
-        } else visible.trimStart()
+        val safe = if (opening >= 0 && CONTROL_MARKERS.any { it.startsWith(visible.substring(opening)) }) {
+            visible.substring(0, opening)
+        } else visible
+        return if (trimLeadingWhitespace) safe.trimStart() else safe
     }
 
     companion object {
