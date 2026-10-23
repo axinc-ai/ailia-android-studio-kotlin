@@ -315,7 +315,8 @@ class AiliaSpeechSample(private val modelDirectory: File) {
      * Processes audio from a WAV file (non-live mode).
      * Calls pushInputData, finalizeInputData, transcribe, and returns transcript lines.
      */
-    fun process(audio: FloatArray, channels: Int, sampleRate: Int): List<String> {
+    fun process(audio: FloatArray, channels: Int, sampleRate: Int,
+                onText: (List<String>) -> Unit = {}): List<String> {
         return synchronized(speechLock) {
             val engine = speech ?: error("Speech model not initialized")
             Log.i(TAG, "Speech process: audio.size=${audio.size}, channels=$channels, sampleRate=$sampleRate, samples=${audio.size / channels}")
@@ -324,7 +325,9 @@ class AiliaSpeechSample(private val modelDirectory: File) {
             val lines = mutableListOf<String>()
             while (engine.getComplete() == 0) {
                 transcribeOnce(engine)
-                lines.addAll(collectTextLines(engine))
+                val confirmed = collectTextLines(engine)
+                lines.addAll(confirmed)
+                if (confirmed.isNotEmpty()) onText(confirmed)
             }
             requireSuccess("resetTranscribeState", engine.resetTranscribeState())
             lines
@@ -399,11 +402,12 @@ class AiliaSpeechSample(private val modelDirectory: File) {
      * Does NOT call finalizeInputData - use finalizeLiveAudio() when recording stops.
      * Returns transcript lines confirmed by this call.
      */
-    fun pushLiveAudio(audio: FloatArray, channels: Int, sampleRate: Int): List<String> =
-        pushLiveAudio(audio, channels, sampleRate, {})
+    fun pushLiveAudio(audio: FloatArray, channels: Int, sampleRate: Int,
+                      onText: (List<String>) -> Unit = {}): List<String> =
+        pushLiveAudio(audio, channels, sampleRate, {}, onText)
 
     private fun pushLiveAudio(audio: FloatArray, channels: Int, sampleRate: Int,
-                              checkActive: () -> Unit): List<String> {
+                              checkActive: () -> Unit, onText: (List<String>) -> Unit): List<String> {
         return synchronized(speechLock) {
             checkActive()
             val engine = speech ?: return@synchronized emptyList()
@@ -411,7 +415,10 @@ class AiliaSpeechSample(private val modelDirectory: File) {
             val lines = mutableListOf<String>()
             while (engine.getBuffered() != 0) {
                 transcribeOnce(engine, checkActive)
-                lines.addAll(collectTextLines(engine))
+                val confirmed = collectTextLines(engine)
+                lines.addAll(confirmed)
+                checkActive()
+                if (confirmed.isNotEmpty()) onText(confirmed)
             }
             lines
         }
@@ -421,9 +428,10 @@ class AiliaSpeechSample(private val modelDirectory: File) {
      * Finalizes live audio input and returns the remaining transcript lines.
      * Call this when mic recording stops.
      */
-    fun finalizeLiveAudio(): List<String> = finalizeLiveAudio({})
+    fun finalizeLiveAudio(onText: (List<String>) -> Unit = {}): List<String> =
+        finalizeLiveAudio({}, onText)
 
-    private fun finalizeLiveAudio(checkActive: () -> Unit): List<String> {
+    private fun finalizeLiveAudio(checkActive: () -> Unit, onText: (List<String>) -> Unit): List<String> {
         return synchronized(speechLock) {
             checkActive()
             val engine = speech ?: return@synchronized emptyList()
@@ -431,7 +439,10 @@ class AiliaSpeechSample(private val modelDirectory: File) {
             val lines = mutableListOf<String>()
             while (engine.getComplete() == 0) {
                 transcribeOnce(engine, checkActive)
-                lines.addAll(collectTextLines(engine))
+                val confirmed = collectTextLines(engine)
+                lines.addAll(confirmed)
+                checkActive()
+                if (confirmed.isNotEmpty()) onText(confirmed)
             }
             requireSuccess("resetTranscribeState", engine.resetTranscribeState())
             lines
@@ -595,13 +606,10 @@ class AiliaSpeechSample(private val modelDirectory: File) {
                 val batch = pendingAudio.take() ?: break
                 try {
                     val startTime = System.nanoTime()
-                    val lines = pushLiveAudio(batch, 1, sampleRate, ::checkMicProcessingActive)
-                    val processingTimeMs = micProcessingTimeNanos.addAndGet(
-                        System.nanoTime() - startTime
-                    ) / 1_000_000
-                    if (lines.isNotEmpty()) {
-                        listener.onResult(lines, false, processingTimeMs)
+                    pushLiveAudio(batch, 1, sampleRate, ::checkMicProcessingActive) { lines ->
+                        notifyMicText(listener, lines, startTime)
                     }
+                    micProcessingTimeNanos.addAndGet(System.nanoTime() - startTime)
                 } catch (_: CancellationException) {
                     break
                 } catch (e: Exception) {
@@ -621,17 +629,15 @@ class AiliaSpeechSample(private val modelDirectory: File) {
             return
         }
         executor.execute {
-            var finalLines: List<String>? = null
+            var completed = false
             try {
                 checkMicProcessingActive()
-                finalLines = if (isInitialized) {
-                    val startTime = System.nanoTime()
-                    val lines = finalizeLiveAudio(::checkMicProcessingActive)
-                    micProcessingTimeNanos.addAndGet(System.nanoTime() - startTime)
-                    lines
-                } else {
-                    emptyList()
+                val startTime = System.nanoTime()
+                finalizeLiveAudio(::checkMicProcessingActive) { lines ->
+                    notifyMicText(listener, lines, startTime)
                 }
+                micProcessingTimeNanos.addAndGet(System.nanoTime() - startTime)
+                completed = true
             } catch (_: CancellationException) {
                 // Option changes discard this session; the model owner will release it.
             } catch (e: Exception) {
@@ -645,11 +651,18 @@ class AiliaSpeechSample(private val modelDirectory: File) {
                 }
                 micSessionActive.set(false)
             }
-            if (finalLines != null && isInitialized && finalizeMicInput.get()) {
-                listener.onResult(finalLines, true, micProcessingTimeNanos.get() / 1_000_000)
+            if (completed && isInitialized && finalizeMicInput.get()) {
+                // Text has already been published after each transcribe; only signal completion.
+                listener.onResult(emptyList(), true, micProcessingTimeNanos.get() / 1_000_000)
             }
         }
         executor.shutdown()
+    }
+
+    private fun notifyMicText(listener: MicRecordingListener, lines: List<String>, startTime: Long) {
+        checkMicProcessingActive()
+        val processingTimeMs = (micProcessingTimeNanos.get() + System.nanoTime() - startTime) / 1_000_000
+        listener.onResult(lines, false, processingTimeMs)
     }
 
     /** 録音を停止する。通常停止時は未処理音声をすべて投入してから認識を確定する。 */
@@ -721,7 +734,7 @@ class AiliaSpeechSample(private val modelDirectory: File) {
      * Collects transcript lines from the speech engine in the
      * meeting-minutes format used by ailia-models-flutter:
      * "[mm:ss - mm:ss] text". When diarization is enabled, each line
-     * is prefixed with the speaker ID.
+     * is prefixed with a compact speaker label such as "S0:".
      */
     private fun collectTextLines(engine: AiliaSpeech): List<String> {
         val count = engine.getTextCount()
@@ -738,7 +751,7 @@ class AiliaSpeechSample(private val modelDirectory: File) {
             val stamp = "[${formatTimeStamp(text.timeStampBegin)} - ${formatTimeStamp(text.timeStampEnd)}]"
             if (diarizationEnabled && text.speakerId.toLong() and 0xFFFFFFFFL != AiliaSpeech.AILIA_SPEECH_SPEAKER_ID_UNKNOWN.toLong() and 0xFFFFFFFFL) {
                 Log.i(TAG, "Speech text[$i]: speaker=#${text.speakerId} '${text.text}' confidence=${text.confidence}")
-                lines.add("$stamp [Speaker ${text.speakerId}] ${text.text}")
+                lines.add("$stamp S${text.speakerId}: ${text.text}")
             } else {
                 Log.i(TAG, "Speech text[$i]: '${text.text}' confidence=${text.confidence}")
                 lines.add("$stamp ${text.text}")

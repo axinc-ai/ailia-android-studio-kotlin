@@ -3360,7 +3360,6 @@ class MainActivity : AppCompatActivity() {
     /** 議事録風トランスクリプトに行を追記して表示を更新する(UIスレッドで呼ぶこと) */
     private fun appendTranscriptLines(lines: List<String>) {
         if (lines.isEmpty()) return
-        speechIntermediateText = null
         speechTranscript.addAll(lines)
         updateTranscriptDisplay()
     }
@@ -4496,9 +4495,12 @@ class MainActivity : AppCompatActivity() {
                     try {
                         val audio: AudioUtil.WavFileData = AudioUtil().loadRawAudio(this.resources.openRawResource(R.raw.demo))
                         // 処理時間はtranscribeTimeListenerがtranscribeごとに更新する
-                        val lines = speechSample.process(audio.audioData, audio.channels, audio.sampleRate)
+                        val lines = speechSample.process(audio.audioData, audio.channels, audio.sampleRate) { confirmed ->
+                            runOnUiThreadIfActive {
+                                appendTranscriptLines(confirmed)
+                            }
+                        }
                         runOnUiThreadIfActive {
-                            appendTranscriptLines(lines)
                             classificationResultTextView.text =
                                 if (lines.isEmpty()) "Speech Result: (no speech detected)" else "Speech Result:"
                         }
