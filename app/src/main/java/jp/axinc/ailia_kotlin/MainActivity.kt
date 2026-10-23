@@ -128,6 +128,7 @@ class MainActivity : AppCompatActivity() {
     // 議事録風トランスクリプト([mm:ss - mm:ss] text の蓄積)
     private val speechTranscript = mutableListOf<String>()
     private var speechIntermediateText: String? = null
+    private var speechMicGeneration = 0L
 
     private val modelDirectory by lazy { ModelDownloader.modelDirectory(this) }
     private val poseEstimatorSample by lazy { AiliaPoseEstimatorSample(modelDirectory) }
@@ -3335,9 +3336,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupDiarizationCheckBox() {
-        speechSample.diarizationEnabled = diarizationCheckBox.isChecked
-        diarizationCheckBox.setOnCheckedChangeListener { _, isChecked ->
-            speechSample.diarizationEnabled = isChecked
+        diarizationCheckBox.setOnCheckedChangeListener { _, _ ->
             resetSpeechForOptionChange()
         }
     }
@@ -4417,6 +4416,7 @@ class MainActivity : AppCompatActivity() {
         val isMicMode = speechModeRadioGroup.checkedRadioButtonId == R.id.micRadioButton
         // LIVEフラグはLive Modeチェックボックスで有効化(マイクモード時のみ)
         val liveMode = isMicMode && liveModeCheckBox.isChecked
+        val diarization = diarizationCheckBox.isChecked
         val modelType = selectedSpeechModelType
         val envId = selectedEnvId
         val useQnn = selectedSpeechUseQnn
@@ -4428,6 +4428,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 // QNN選択時はダウンロードするファイルも.qnnに変わるため先に設定する
                 speechSample.useQnn = useQnn
+                speechSample.diarizationEnabled = diarization
                 val downloaded = speechSample.downloadModel(modelType, object : ModelDownloadListener {
                     override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
                         Log.d("AILIA_Main", "Speech: downloading $fileName")
@@ -4544,16 +4545,19 @@ class MainActivity : AppCompatActivity() {
         }
         pendingAudioAction = null
 
+        val generation = ++speechMicGeneration
         val started = speechSample.startMicRecording(object : AiliaSpeechSample.MicRecordingListener {
             override fun onWaveform(samples: FloatArray, sampleRate: Int) {
                 val blocks = WaveformView.peakBlocks(samples, samples.size, sampleRate)
                 runOnUiThreadIfActive {
+                    if (generation != speechMicGeneration) return@runOnUiThreadIfActive
                     waveformView.push(blocks)
                 }
             }
 
             override fun onIntermediateResult(text: String) {
                 runOnUiThreadIfActive {
+                    if (generation != speechMicGeneration) return@runOnUiThreadIfActive
                     showIntermediateTranscript(text)
                     classificationResultTextView.text = "Recording..."
                 }
@@ -4565,6 +4569,7 @@ class MainActivity : AppCompatActivity() {
                 processingTimeMs: Long,
             ) {
                 runOnUiThreadIfActive {
+                    if (generation != speechMicGeneration) return@runOnUiThreadIfActive
                     appendTranscriptLines(lines)
                     // 処理時間はtranscribeTimeListenerがtranscribeごとに更新する
                     if (isFinal) {
@@ -4582,6 +4587,7 @@ class MainActivity : AppCompatActivity() {
 
             override fun onError(error: String) {
                 runOnUiThreadIfActive {
+                    if (generation != speechMicGeneration) return@runOnUiThreadIfActive
                     Log.e("AILIA_Main", "Microphone recording error: $error")
                     classificationResultTextView.text = "Speech Result: Error - $error"
                     if (!speechSample.isMicRecording) {
@@ -4609,8 +4615,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopMicRecording(finalize: Boolean = true) {
-        if (speechSample.isMicRecording) {
-            speechSample.stopMicRecording(finalize)
+        val wasRecording = speechSample.isMicRecording
+        if (!finalize) speechMicGeneration++
+        // A stopped recorder may still be decoding/finalizing. Cancel that work too.
+        speechSample.stopMicRecording(finalize)
+        if (wasRecording || !finalize) {
             recTimerHandler.removeCallbacks(recTimerRunnable)
             runOnUiThreadIfActive {
                 micRecordButton.text = "Record"

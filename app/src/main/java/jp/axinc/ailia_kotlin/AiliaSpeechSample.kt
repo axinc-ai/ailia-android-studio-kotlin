@@ -11,6 +11,7 @@ import java.util.Locale
 import java.util.concurrent.CancellationException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -114,8 +115,8 @@ class AiliaSpeechSample(private val modelDirectory: File) {
     @Volatile
     private var isInitialized = false
     private var audioRecord: AudioRecord? = null
-    private var micReadExecutor: ExecutorService? = null
-    private var micRecognitionExecutor: ExecutorService? = null
+    @Volatile private var micReadExecutor: ExecutorService? = null
+    @Volatile private var micRecognitionExecutor: ExecutorService? = null
     private val micRecording = AtomicBoolean(false)
     private val micSessionActive = AtomicBoolean(false)
     private val finalizeMicInput = AtomicBoolean(true)
@@ -331,9 +332,12 @@ class AiliaSpeechSample(private val modelDirectory: File) {
     }
 
     /** transcribeを1回実行し、その所要時間を[transcribeTimeListener]へ通知する。 */
-    private fun transcribeOnce(engine: AiliaSpeech) {
+    private fun transcribeOnce(engine: AiliaSpeech, checkActive: () -> Unit = {}) {
+        checkActive()
         val startNanos = System.nanoTime()
-        requireSuccess("transcribe", engine.transcribe())
+        val status = engine.transcribe()
+        checkActive()
+        requireSuccess("transcribe", status)
         transcribeTimeListener?.invoke((System.nanoTime() - startNanos) / 1_000_000)
     }
 
@@ -395,13 +399,18 @@ class AiliaSpeechSample(private val modelDirectory: File) {
      * Does NOT call finalizeInputData - use finalizeLiveAudio() when recording stops.
      * Returns transcript lines confirmed by this call.
      */
-    fun pushLiveAudio(audio: FloatArray, channels: Int, sampleRate: Int): List<String> {
+    fun pushLiveAudio(audio: FloatArray, channels: Int, sampleRate: Int): List<String> =
+        pushLiveAudio(audio, channels, sampleRate, {})
+
+    private fun pushLiveAudio(audio: FloatArray, channels: Int, sampleRate: Int,
+                              checkActive: () -> Unit): List<String> {
         return synchronized(speechLock) {
+            checkActive()
             val engine = speech ?: return@synchronized emptyList()
             requireSuccess("pushInputData", engine.pushInputData(audio, channels, audio.size / channels, sampleRate))
             val lines = mutableListOf<String>()
             while (engine.getBuffered() != 0) {
-                transcribeOnce(engine)
+                transcribeOnce(engine, checkActive)
                 lines.addAll(collectTextLines(engine))
             }
             lines
@@ -412,13 +421,16 @@ class AiliaSpeechSample(private val modelDirectory: File) {
      * Finalizes live audio input and returns the remaining transcript lines.
      * Call this when mic recording stops.
      */
-    fun finalizeLiveAudio(): List<String> {
+    fun finalizeLiveAudio(): List<String> = finalizeLiveAudio({})
+
+    private fun finalizeLiveAudio(checkActive: () -> Unit): List<String> {
         return synchronized(speechLock) {
+            checkActive()
             val engine = speech ?: return@synchronized emptyList()
             requireSuccess("finalizeInputData", engine.finalizeInputData())
             val lines = mutableListOf<String>()
             while (engine.getComplete() == 0) {
-                transcribeOnce(engine)
+                transcribeOnce(engine, checkActive)
                 lines.addAll(collectTextLines(engine))
             }
             requireSuccess("resetTranscribeState", engine.resetTranscribeState())
@@ -441,26 +453,23 @@ class AiliaSpeechSample(private val modelDirectory: File) {
             return false
         }
 
-        if (liveModeEnabled) {
-            val callback = object : IntermediateCallback {
-                override fun onIntermediateResult(text: String): Int {
-                    listener.onIntermediateResult(text)
-                    return 0
-                }
+        // Register in both modes so an option change can abort an in-flight native decode.
+        val callback = object : IntermediateCallback {
+            override fun onIntermediateResult(text: String): Int {
+                if (!isInitialized || !finalizeMicInput.get()) return 1
+                if (liveModeEnabled) listener.onIntermediateResult(text)
+                return if (isInitialized && finalizeMicInput.get()) 0 else 1
             }
-            val callbackResult = synchronized(speechLock) { speech?.setIntermediateCallback(callback) }
-            Log.i(TAG, "Speech setIntermediateCallback result=$callbackResult")
-            if (callbackResult != 0) {
-                speechIntermediateCallback = null
-                micSessionActive.set(false)
-                listener.onError("Failed to register intermediate result callback: $callbackResult")
-                return false
-            }
-            // Keep a strong reference while the native speech instance owns the callback.
-            speechIntermediateCallback = callback
-        } else {
-            speechIntermediateCallback = null
         }
+        val callbackResult = synchronized(speechLock) { speech?.setIntermediateCallback(callback) }
+        Log.i(TAG, "Speech setIntermediateCallback result=$callbackResult")
+        if (callbackResult != 0) {
+            speechIntermediateCallback = null
+            micSessionActive.set(false)
+            listener.onError("Failed to register intermediate result callback: $callbackResult")
+            return false
+        }
+        speechIntermediateCallback = callback
 
         val sampleRate = 16000
         val readChunkSize = sampleRate / 10
@@ -566,16 +575,10 @@ class AiliaSpeechSample(private val modelDirectory: File) {
         } finally {
             micRecording.set(false)
             releaseAudioRecord(recorder)
+            // Cleanup is queued after recognition even when cancelled; never interrupt JNI.
+            submitMicFinalization(listener)
             micReadExecutor?.shutdown()
             micReadExecutor = null
-
-            if (finalizeMicInput.get()) {
-                submitMicFinalization(listener)
-            } else {
-                micRecognitionExecutor?.shutdownNow()
-                micRecognitionExecutor = null
-                micSessionActive.set(false)
-            }
         }
     }
 
@@ -592,13 +595,15 @@ class AiliaSpeechSample(private val modelDirectory: File) {
                 val batch = pendingAudio.take() ?: break
                 try {
                     val startTime = System.nanoTime()
-                    val lines = pushLiveAudio(batch, 1, sampleRate)
+                    val lines = pushLiveAudio(batch, 1, sampleRate, ::checkMicProcessingActive)
                     val processingTimeMs = micProcessingTimeNanos.addAndGet(
                         System.nanoTime() - startTime
                     ) / 1_000_000
                     if (lines.isNotEmpty()) {
                         listener.onResult(lines, false, processingTimeMs)
                     }
+                } catch (_: CancellationException) {
+                    break
                 } catch (e: Exception) {
                     Log.e(TAG, "pushLiveAudio failed", e)
                     listener.onError(e.message ?: "Live speech recognition failed")
@@ -616,30 +621,32 @@ class AiliaSpeechSample(private val modelDirectory: File) {
             return
         }
         executor.execute {
+            var finalLines: List<String>? = null
             try {
-                val finalLines = if (isInitialized) {
+                checkMicProcessingActive()
+                finalLines = if (isInitialized) {
                     val startTime = System.nanoTime()
-                    val lines = finalizeLiveAudio()
+                    val lines = finalizeLiveAudio(::checkMicProcessingActive)
                     micProcessingTimeNanos.addAndGet(System.nanoTime() - startTime)
                     lines
                 } else {
                     emptyList()
                 }
-                listener.onResult(
-                    finalLines,
-                    true,
-                    micProcessingTimeNanos.get() / 1_000_000,
-                )
+            } catch (_: CancellationException) {
+                // Option changes discard this session; the model owner will release it.
             } catch (e: Exception) {
                 Log.e(TAG, "finalizeLiveAudio failed", e)
                 listener.onError(e.message ?: "Failed to finalize live speech recognition")
             } finally {
-                micSessionActive.set(false)
                 synchronized(this) {
                     if (micRecognitionExecutor === executor) {
                         micRecognitionExecutor = null
                     }
                 }
+                micSessionActive.set(false)
+            }
+            if (finalLines != null && isInitialized && finalizeMicInput.get()) {
+                listener.onResult(finalLines, true, micProcessingTimeNanos.get() / 1_000_000)
             }
         }
         executor.shutdown()
@@ -651,6 +658,12 @@ class AiliaSpeechSample(private val modelDirectory: File) {
         finalizeMicInput.set(finalize)
         micRecording.set(false)
         releaseAudioRecord()
+    }
+
+    private fun checkMicProcessingActive() {
+        if (!isInitialized || !finalizeMicInput.get()) {
+            throw CancellationException("Microphone recognition cancelled")
+        }
     }
 
     private fun releaseAudioRecord(expected: AudioRecord? = null) {
@@ -678,10 +691,25 @@ class AiliaSpeechSample(private val modelDirectory: File) {
     }
 
     private fun shutdownMicExecutors() {
-        micReadExecutor?.shutdownNow()
+        // Called on the model owner before close/reinitialization. Let the reader enqueue
+        // its cleanup first, then join recognition without interrupting native inference.
+        var interrupted = false
+        fun finish(executor: ExecutorService?) {
+            executor ?: return
+            executor.shutdown()
+            while (true) {
+                try {
+                    if (executor.awaitTermination(100, TimeUnit.MILLISECONDS)) return
+                } catch (_: InterruptedException) {
+                    interrupted = true
+                }
+            }
+        }
+        finish(micReadExecutor)
         micReadExecutor = null
-        micRecognitionExecutor?.shutdownNow()
+        finish(micRecognitionExecutor)
         micRecognitionExecutor = null
+        if (interrupted) Thread.currentThread().interrupt()
     }
 
     private fun formatTimeStamp(sec: Float): String {
